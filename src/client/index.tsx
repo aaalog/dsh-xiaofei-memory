@@ -435,5 +435,9 @@ function SystemTab({ scope, user }: { scope: any; user: any }) {
 
 // The client bundle runs inside the DSH module loader; expose the shared ctx
 // so components can reach the host bridge (`ctx.get("remote")`).
+//
+// NEVER add `export default` here: the Loader's `unwrapExports()` prefers
+// `module.exports.default` and would hand Cordis a bare function plugin,
+// silently dropping `inject = ["slots"]` — the plugin then activates "fine"
+// while every `ctx.slots.*` call throws and NO slot registration ever happens.
 declare global { interface Window { __ctx__?: any } }
-export default apply;

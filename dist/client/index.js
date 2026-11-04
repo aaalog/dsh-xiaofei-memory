@@ -37,7 +37,6 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var index_exports = {};
 __export(index_exports, {
   apply: () => apply,
-  default: () => index_default,
   inject: () => inject
 });
 module.exports = __toCommonJS(index_exports);
@@ -438,7 +437,6 @@ function SystemTab({ scope, user }) {
   }, []);
   return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "dshxf-h" }, "\u5E95\u5C42\u7CFB\u7EDF"), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("label", null, "\u62BD\u53D6\u6A21\u578B", /* @__PURE__ */ React.createElement("input", { className: "dshxf-in", value: model, onChange: (e) => setModel(e.target.value) })), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: saveModel }, "\u4FDD\u5B58")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: loadSouls }, "\u52A0\u8F7D\u7075\u9B42\u521D\u59CB\u8BB0\u5FC6"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)), /* @__PURE__ */ React.createElement("ul", { className: "dshxf-list" }, souls.map((s) => /* @__PURE__ */ React.createElement("li", { key: s.id, className: "dshxf-mem" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-meta" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, s.id), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, s.layer)), /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-body" }, s.content)))));
 }
-var index_default = apply;
 
     })(require, module, exports);
     return module.exports;
