@@ -1,6 +1,6 @@
 {
   "name": "dsh-xiaofei-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Headless, async, self-evolving long-term memory engine for DeepSeek Harness (DSH). A dual-track 'digital hippocampus': pre-step retrieval injection, turn/end async capture, nightly metabolism, and adaptive evolution.",
   "keywords": [
     "deepseek-harness",
@@ -22,7 +22,8 @@
   "files": [
     "dist",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "license": "MIT",
   "dsh": {
