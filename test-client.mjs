@@ -53,7 +53,8 @@ const mockCtx = {
   get: () => undefined,
   slots: {
     register: (def, comp) => { slotsRegistered.push({ def, comp }); return () => {}; },
-    inject: (slot, fn) => { slotsInjected.push({ slot, fn }); return () => {}; },
+    // Simulate the slot being declared: the inject callback fires immediately.
+    inject: (slot, fn) => { slotsInjected.push({ slot, fn }); try { fn(); } catch (e) { console.log("inject cb threw:", e.message); } return () => {}; },
   },
 };
 let disposer = null;
@@ -63,8 +64,21 @@ try {
   console.log("apply threw:", e.message);
 }
 ok(slotsInjected.some((s) => s.slot === "settings.section"), "injects settings.section slot");
-ok(slotsRegistered.some((r) => r.def.name === "settings.section"), "registers a settings.section entry");
+ok(slotsRegistered.some((r) => r.def.name === "settings.section"), "registers via injected slot");
 ok(typeof disposer === "function", "apply returns disposer");
+
+// Regression: an UNdeclared settings.section slot must NOT make apply() throw
+// (this exact case previously crashed DSH web boot).
+const crashingCtx = {
+  get: () => undefined,
+  slots: {
+    register: () => { throw new Error('slot "settings.section" is not declared'); },
+    inject: () => () => {},
+  },
+};
+let crashThrew = false;
+try { exportsObj.apply(crashingCtx); } catch { crashThrew = true; }
+ok(!crashThrew, "apply() does not throw when settings.section is undeclared");
 
 console.log(`\nRESULT: ${passed} passed, ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

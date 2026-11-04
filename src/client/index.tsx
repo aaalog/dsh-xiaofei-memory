@@ -31,25 +31,33 @@ function hostService(ctx: any, name: string): any {
 
 export function apply(ctx: any): () => void {
   (window as any).__ctx__ = ctx;
-  injectCss();
+  try { injectCss(); } catch { /* ignore */ }
   let disposeEntry: (() => void) | null = null;
   let disposeInjection: (() => void) | null = null;
   const registerSection = () => {
     try { disposeEntry?.(); } catch { /* ignore */ }
-    disposeEntry = ctx.slots.register(
-      {
-        name: "settings.section",
-        id: NS,
-        order: 30,
-        label: () => "小肥鱼记忆引擎",
-        inject: () => ({ scope: getScope(ctx) }),
-      },
-      ConsolePage
-    );
+    try {
+      disposeEntry = ctx.slots.register(
+        {
+          name: "settings.section",
+          id: NS,
+          order: 30,
+          label: () => "小肥鱼记忆引擎",
+          inject: () => ({ scope: getScope(ctx) }),
+        },
+        ConsolePage
+      );
+    } catch (e) {
+      // The settings.section slot may not be declared in this profile (the
+      // settings-UI plugin can be disabled). Never crash DSH boot; the console
+      // mounts automatically once the slot is declared.
+      console.warn("[dsh-xiaofei-memory] settings.section unavailable:", e);
+    }
   };
   try { disposeInjection = ctx.slots.inject("settings.section", registerSection); }
   catch (e) { console.warn("[dsh-xiaofei-memory] settings slot inject failed", e); }
-  registerSection();
+  // Do NOT call registerSection() directly: an undeclared slot throws and would
+  // abort the whole web boot. `inject` fires when/if the slot is declared.
   return () => {
     try { disposeInjection?.(); } catch { /* ignore */ }
     try { disposeEntry?.(); } catch { /* ignore */ }

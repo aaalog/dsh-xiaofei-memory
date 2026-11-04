@@ -68,7 +68,10 @@ function hostService(ctx, name) {
 }
 function apply(ctx) {
   window.__ctx__ = ctx;
-  injectCss();
+  try {
+    injectCss();
+  } catch {
+  }
   let disposeEntry = null;
   let disposeInjection = null;
   const registerSection = () => {
@@ -76,23 +79,26 @@ function apply(ctx) {
       disposeEntry?.();
     } catch {
     }
-    disposeEntry = ctx.slots.register(
-      {
-        name: "settings.section",
-        id: NS,
-        order: 30,
-        label: () => "\u5C0F\u80A5\u9C7C\u8BB0\u5FC6\u5F15\u64CE",
-        inject: () => ({ scope: getScope(ctx) })
-      },
-      ConsolePage
-    );
+    try {
+      disposeEntry = ctx.slots.register(
+        {
+          name: "settings.section",
+          id: NS,
+          order: 30,
+          label: () => "\u5C0F\u80A5\u9C7C\u8BB0\u5FC6\u5F15\u64CE",
+          inject: () => ({ scope: getScope(ctx) })
+        },
+        ConsolePage
+      );
+    } catch (e) {
+      console.warn("[dsh-xiaofei-memory] settings.section unavailable:", e);
+    }
   };
   try {
     disposeInjection = ctx.slots.inject("settings.section", registerSection);
   } catch (e) {
     console.warn("[dsh-xiaofei-memory] settings slot inject failed", e);
   }
-  registerSection();
   return () => {
     try {
       disposeInjection?.();
