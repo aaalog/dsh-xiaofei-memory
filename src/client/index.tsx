@@ -219,6 +219,9 @@ function injectCss() {
 
 export const inject = ["slots"];
 
+/** Stable fallback snapshot: useSyncExternalStore requires a cached value. */
+const EMPTY_CONFIG = { user: {}, mode: "unknown" };
+
 // ── shared hook: read config from settings scope ────────────────────────────
 // Always calls the same hooks regardless of `scope`, so an initially-missing
 // scope (then present) cannot violate the React hooks order.
@@ -228,7 +231,7 @@ function useConfig(scope: any): { user: any; mode: string } {
     [scope]
   );
   const getSnapshot = React.useCallback(
-    () => (scope && typeof scope.getSnapshot === "function" ? scope.getSnapshot() : { user: {}, mode: "unknown" }),
+    () => (scope && typeof scope.getSnapshot === "function" ? scope.getSnapshot() : EMPTY_CONFIG),
     [scope]
   );
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
@@ -357,7 +360,7 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
           <span>core <b>{stats.byLayer.core ?? 0}</b></span>
           <span>weekly <b>{stats.byLayer.weekly ?? 0}</b></span>
           <span>recent <b>{stats.byLayer.recent ?? 0}</b></span>
-          <span>检索权重 <b>{stats.evolution?.retrievalWeight?.toFixed?.(2) ?? "—"}</b></span>
+          <span>检索权重 <b>{typeof stats.evolution?.retrievalWeight === "number" ? stats.evolution.retrievalWeight.toFixed(2) : "—"}</b></span>
         </div>
       )}
       <div className="dshxf-actions">
@@ -377,7 +380,7 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
             <div className="dshxf-mem-meta">
               <span className="dshxf-tag">{r.roleId}</span>
               <span className="dshxf-tag">{r.layer}</span>
-              <span className="dshxf-tag dshxf-str">强度 {r.strength.toFixed?.(2) ?? r.strength}</span>
+              <span className="dshxf-tag dshxf-str">强度 {typeof r.strength === "number" ? r.strength.toFixed(2) : String(r.strength ?? "—")}</span>
               {typeof r.score === "number" && <span className="dshxf-tag">分 {r.score.toFixed(2)}</span>}
             </div>
             <div className="dshxf-mem-body">{r.content}</div>

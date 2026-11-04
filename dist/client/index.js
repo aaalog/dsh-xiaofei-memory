@@ -250,6 +250,7 @@ function injectCss() {
   }
 }
 var inject = ["slots"];
+var EMPTY_CONFIG = { user: {}, mode: "unknown" };
 function useConfig(scope) {
   const subscribe = React.useCallback(
     (cb) => scope && typeof scope.subscribe === "function" ? scope.subscribe(cb) : () => {
@@ -257,7 +258,7 @@ function useConfig(scope) {
     [scope]
   );
   const getSnapshot = React.useCallback(
-    () => scope && typeof scope.getSnapshot === "function" ? scope.getSnapshot() : { user: {}, mode: "unknown" },
+    () => scope && typeof scope.getSnapshot === "function" ? scope.getSnapshot() : EMPTY_CONFIG,
     [scope]
   );
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
@@ -357,7 +358,7 @@ function MemoriesTab({ scope, user }) {
   React.useEffect(() => {
     refreshStats();
   }, []);
-  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "dshxf-h" }, "\u8BB0\u5FC6\u56FE\u8C31"), stats && /* @__PURE__ */ React.createElement("div", { className: "dshxf-stats" }, /* @__PURE__ */ React.createElement("span", null, "\u603B\u8BB0\u5FC6 ", /* @__PURE__ */ React.createElement("b", null, stats.total)), /* @__PURE__ */ React.createElement("span", null, "core ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.core ?? 0)), /* @__PURE__ */ React.createElement("span", null, "weekly ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.weekly ?? 0)), /* @__PURE__ */ React.createElement("span", null, "recent ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.recent ?? 0)), /* @__PURE__ */ React.createElement("span", null, "\u68C0\u7D22\u6743\u91CD ", /* @__PURE__ */ React.createElement("b", null, stats.evolution?.retrievalWeight?.toFixed?.(2) ?? "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "dshxf-h" }, "\u8BB0\u5FC6\u56FE\u8C31"), stats && /* @__PURE__ */ React.createElement("div", { className: "dshxf-stats" }, /* @__PURE__ */ React.createElement("span", null, "\u603B\u8BB0\u5FC6 ", /* @__PURE__ */ React.createElement("b", null, stats.total)), /* @__PURE__ */ React.createElement("span", null, "core ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.core ?? 0)), /* @__PURE__ */ React.createElement("span", null, "weekly ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.weekly ?? 0)), /* @__PURE__ */ React.createElement("span", null, "recent ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.recent ?? 0)), /* @__PURE__ */ React.createElement("span", null, "\u68C0\u7D22\u6743\u91CD ", /* @__PURE__ */ React.createElement("b", null, typeof stats.evolution?.retrievalWeight === "number" ? stats.evolution.retrievalWeight.toFixed(2) : "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "dshxf-in dshxf-grow",
@@ -366,7 +367,7 @@ function MemoriesTab({ scope, user }) {
       onChange: (e) => setQuery(e.target.value),
       onKeyDown: (e) => e.key === "Enter" && doSearch()
     }
-  ), /* @__PURE__ */ React.createElement("select", { className: "dshxf-in", value: roleId, onChange: (e) => setRoleId(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u5168\u90E8\u89D2\u8272"), roles.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.name))), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-primary", onClick: doSearch }, "\u68C0\u7D22"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: refreshStats }, "\u5237\u65B0\u7EDF\u8BA1")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-msg" }, msg), /* @__PURE__ */ React.createElement("ul", { className: "dshxf-list" }, rows.map((r) => /* @__PURE__ */ React.createElement("li", { key: r.id, className: "dshxf-mem" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-meta" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.roleId), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.layer), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag dshxf-str" }, "\u5F3A\u5EA6 ", r.strength.toFixed?.(2) ?? r.strength), typeof r.score === "number" && /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u5206 ", r.score.toFixed(2))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-body" }, r.content)))));
+  ), /* @__PURE__ */ React.createElement("select", { className: "dshxf-in", value: roleId, onChange: (e) => setRoleId(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u5168\u90E8\u89D2\u8272"), roles.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.name))), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-primary", onClick: doSearch }, "\u68C0\u7D22"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: refreshStats }, "\u5237\u65B0\u7EDF\u8BA1")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-msg" }, msg), /* @__PURE__ */ React.createElement("ul", { className: "dshxf-list" }, rows.map((r) => /* @__PURE__ */ React.createElement("li", { key: r.id, className: "dshxf-mem" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-meta" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.roleId), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.layer), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag dshxf-str" }, "\u5F3A\u5EA6 ", typeof r.strength === "number" ? r.strength.toFixed(2) : String(r.strength ?? "\u2014")), typeof r.score === "number" && /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u5206 ", r.score.toFixed(2))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-body" }, r.content)))));
 }
 function SleepTab({ scope, user }) {
   const hour = Number(user?.sleepTimeHour ?? 3);
