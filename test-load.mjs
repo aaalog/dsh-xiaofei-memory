@@ -27,6 +27,7 @@ const ctx = {
   tools: { register(t) { tools.push(t); return () => {}; } },
   effect(fn) { cleanups.push(fn); },
   get() { return undefined; },
+  inject() {},
 };
 
 const dbDir = join(tmpdir(), `dsh-xmf-load-${Date.now()}`);

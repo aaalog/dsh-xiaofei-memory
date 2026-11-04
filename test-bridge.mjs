@@ -30,6 +30,10 @@ const ctx = {
   tools: { register(t) { return () => {}; } },
   effect(fn) { cleanups.push(fn); },
   get(name) { return name === "webServer" ? webServer : undefined; },
+  inject(deps, callback) {
+    const injected = { webServer, get: (name) => (name === "webServer" ? webServer : undefined) };
+    return callback(injected);
+  },
 };
 
 const dbDir = join(tmpdir(), `dsh-xmf-bridge-${Date.now()}`);
@@ -37,6 +41,10 @@ const cfg = mod.Config({ enabled: true, dbPath: join(dbDir, "memory.sqlite") });
 await mod.apply(ctx, cfg);
 
 check("register bridge route", routes.has("/dshxf/bridge"), [...routes.keys()].join(","));
+
+// The host records the bridge mount outcome for post-restart inspection.
+const statusRow = provided["memory-core"]?.db?.prepare("SELECT value FROM meta WHERE key = 'bridge.status'").get();
+check("bridge status meta is 'mounted'", statusRow?.value === "mounted", String(statusRow?.value));
 
 // Capture the token the way the Web page does: from the index-inject table.
 const table = [];
