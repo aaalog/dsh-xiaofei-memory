@@ -62,18 +62,51 @@
 
 ## 对外 API（`memory-core`）
 
-`ctx.provide('memory-core', { retrieve, addFact, damp, stats })`：
+`ctx.provide('memory-core', { retrieve, addFact, damp, stats, getAllRoles, updateRoles, getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories })`：
 
 - `retrieve(query, opts)` → `{ text, injectedIds, recalled }`
 - `addFact({ content, roleId, layer, entities })` → `{ id, merged }`
 - `damp(id)` → 阻尼单条记忆
 - `stats()` → `{ active, evolution }`
+- `getAllRoles()` / `updateRoles(roles)` → 读写 `Config.roles`
+- `getMemoryStats()` → `{ total, byLayer, byRole, evolution }`
+- `searchMemory(query, roleId)` → 检索结果（含 strength/layer/score）
+- `triggerNightlySleep()` → 手动执行夜间代谢
+- `listSoulMemories()` → 10 条灵魂初始记忆
 
-另注册 `memory_core_retrieve` / `memory_core_add_fact` 工具。
+另注册 `memory_core_retrieve` / `memory_core_add_fact` 工具。另经 `ctx.provide('memoryConsole', ...)` 暴露同套管理能力，供 Web 控制台经 `ctx.remote.memoryConsole` 调用。
+
+## 管理控制台（Web UI）
+
+插件内置一个 4-Tab 可视化控制台，作为 DSH 设置面板挂载到 `settings.section` 槽位（Browser 半 `src/client/index.tsx` → 产物 `lib/client.js`）：
+
+- **角色与路由**：读写 `Config.roles`（id/name/description/enabled），增删改。
+- **记忆图谱**：按 `role_id` 过滤 + 关键词检索（FTS5 trigram + 大二元相似度），展示 strength/layer/score 与分层统计。
+- **夜间睡眠**：设置每日执行小时 + 红色【立即执行夜间代谢】按钮（调用 `triggerNightlySleep`）。
+- **底层系统**：配置 `extractionModel`，展示 10 条灵魂初始记忆。
+
+**Host 半**（`lib/index.js` + `lib/console.js`）：管理 API 经 `ctx.settings` 注册设置面板；数据操作经 `memoryConsole` 服务桥接到前端。
+
+### 编译前端
+
+```bash
+npm install            # 安装构建依赖（首次）
+npm run build:client   # 构建 Browser 半产物 lib/client.js（node build-client.mjs）
+```
+
+产物 `lib/client.js` 通过 `window.__ModuleLoader__.load({ id: "dsh-xiaofei-memory", factory })` 注册；`package.json` 已声明 `dsh.client.platform: "web"` 与 `exports["./client"]`。
+
+### 在 DSH 中看到控制台
+
+1. 将本包接入桌面 profile（`~/.dsh/profiles/desktop` 的 `dependencies` + `dsh.profile.bundles`，或 `dsh plugin` 安装）。
+2. **重启 DSH**（bundle/客户端加载需重启）。
+3. 打开设置页，侧栏出现「小肥鱼记忆引擎」分区，点开即见 4 个 Tab。
+
+> 依赖：Browser 半使用 `react`（DSH 运行时解析）；Host 半使用 `@deepseek-ai/schemastery`，均在 `peerDependencies` 声明。
 
 ## 验收
 
-运行 `test-engine.mjs`（引擎逻辑 21 项）与 `test-load.mjs`（插件装载 20 项）验证。已覆盖：建表+10 初始记忆、角色隔离、内省检索召回"赛博战友/陪伴"、单次检索注入 <50ms、夜间蒸馏归档不膨胀、进化参数持久化。
+运行 `npm test`（`test-engine.mjs` 21 项 + `test-load.mjs` 20 项 + `test-console.mjs` 10 项 + 前端 `build-client.mjs` + `test-client.mjs` 7 项 = 58 项断言）验证。已覆盖：建表+10 初始记忆、角色隔离、内省检索召回"赛博战友/陪伴"、单次检索注入 <50ms、夜间蒸馏归档不膨胀、进化参数持久化、管理 API 数据操作、前端 bundle 装载与 settings.section 注册。
 
 ```bash
 node test-engine.mjs && node test-load.mjs

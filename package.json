@@ -15,6 +15,7 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -27,11 +28,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1",
-    "@deepseek-ai/dsh-llm": "*"
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/schemastery": {
@@ -43,5 +47,14 @@
   },
   "engines": {
     "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "scripts": {
+    "build": "node build-client.mjs",
+    "build:client": "node build-client.mjs",
+    "build:host": "node -e \"console.log('host is plain ESM; no build needed')\"",
+    "test": "node test-engine.mjs && node test-load.mjs && node test-console.mjs && node build-client.mjs && node test-client.mjs"
   }
 }
