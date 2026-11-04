@@ -22,6 +22,8 @@ const routes = new Map();
 const webServer = {
   register({ path, handler }) { routes.set(path, handler); return () => routes.delete(path); },
 };
+/** Optional DSH connection service; the token fallback applies while it is unset. */
+let connectionService;
 
 const ctx = {
   logger: { info: () => {}, warn: (...a) => console.log("  [warn]", ...a), error: console.error },
@@ -29,7 +31,11 @@ const ctx = {
   provide(name, value) { provided[name] = value; },
   tools: { register(t) { return () => {}; } },
   effect(fn) { cleanups.push(fn); },
-  get(name) { return name === "webServer" ? webServer : undefined; },
+  get(name) {
+    if (name === "webServer") return webServer;
+    if (name === "connection") return connectionService;
+    return undefined;
+  },
   inject(deps, callback) {
     const injected = { webServer, get: (name) => (name === "webServer" ? webServer : undefined) };
     return callback(injected);
@@ -108,7 +114,19 @@ check("souls op", souls.status === 200 && Array.isArray(souls.body.result));
 const unknown = await call("nope");
 check("unknown op is a 400", unknown.status === 400 && unknown.body.ok === false);
 
-const bad = await request({ body: undefined, headers: { "x-dshxf-token": token } });
+// With a connection service mounted the route authenticates like /api does:
+// the browser/desktop session cookie is admitted, no token needed.
+connectionService = {
+  admit(req) {
+    return req.headers.cookie === "dsh-session=1" ? { peer: {} } : { rejection: 401 };
+  },
+};
+const admitted = await request({ body: { op: "stats" }, headers: { cookie: "dsh-session=1" } });
+check("session-cookie POST is admitted without a token", admitted.status === 200 && JSON.parse(admitted.payload).ok === true, `status=${admitted.status}`);
+const denied = await request({ body: { op: "stats" } });
+check("POST without session or token is rejected (401)", denied.status === 401, `status=${denied.status}`);
+
+const bad = await request({ body: undefined, headers: { cookie: "dsh-session=1" } });
 check("empty body defaults to unknown op 400", bad.status === 400 || bad.status === 200);
 
 for (const c of cleanups) { try { c(); } catch { /* ignore */ } }

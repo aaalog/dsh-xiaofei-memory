@@ -32,22 +32,29 @@ function hostService(ctx: any, name: string): any {
 /**
  * Data bridge to the host half. DSH only exposes build-time generated Remote
  * namespaces to the page, so this plugin's console operations travel over the
- * host's token-gated loopback route (`/dshxf/bridge`). The token is injected
- * into the page as the `DSHXF_BRIDGE` global at index render time.
+ * host's owner-only loopback route (`/dshxf/bridge`). The page is authenticated
+ * by the DSH session cookie that the shell attaches to every Host request; the
+ * injected DSHXF_BRIDGE token is sent as an extra header when the host
+ * provided one (fallback for compositions without a connection service).
  */
 async function callBridge(op: string, args: any = {}): Promise<any> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
   const bridge = (globalThis as any).DSHXF_BRIDGE;
-  if (!bridge || typeof bridge.token !== "string") {
-    throw new Error("数据桥未注入：宿主侧更新后需要重启 DSH 一次");
-  }
+  if (bridge && typeof bridge.token === "string") headers["x-dshxf-token"] = bridge.token;
   const res = await fetch("dshxf/bridge", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-dshxf-token": bridge.token },
+    headers,
     body: JSON.stringify({ op, args }),
   });
   let data: any = null;
   try { data = await res.json(); } catch { /* non-JSON body */ }
-  if (!res.ok || !data || data.ok !== true) throw new Error(data?.error ?? `HTTP ${res.status}`);
+  if (!res.ok || !data || data.ok !== true) {
+    throw new Error(
+      res.status === 401 || res.status === 403
+        ? "未授权：数据桥拒绝访问（请刷新页面）"
+        : (data?.error ?? `HTTP ${res.status}`),
+    );
+  }
   return data.result;
 }
 

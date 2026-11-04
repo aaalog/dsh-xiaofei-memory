@@ -389,7 +389,23 @@ export async function apply(ctx, config) {
                   return;
                 }
                 if (req.method !== "POST") { sendJson(res, 405, { ok: false, error: "method not allowed" }); return; }
-                if (String(req.headers["x-dshxf-token"] ?? "") !== bridgeToken) {
+                // Owner-only: the page's request carries the DSH browser/desktop
+                // session cookie, and connection.admit() is the same gate the
+                // /api bridge uses. The injected token stays as a fallback for
+                // compositions that mount a web server without a connection.
+                let authorized = false;
+                let connection;
+                try { connection = typeof ctx.get === "function" ? ctx.get("connection") : undefined; } catch { /* ignore */ }
+                if (connection && typeof connection.admit === "function") {
+                  let admission;
+                  try { admission = connection.admit(req); } catch { admission = undefined; }
+                  if (admission && "rejection" in admission) {
+                    sendJson(res, admission.rejection ?? 401, { ok: false, error: "unauthorized" });
+                    return;
+                  }
+                  authorized = admission !== undefined;
+                }
+                if (!authorized && String(req.headers["x-dshxf-token"] ?? "") !== bridgeToken) {
                   sendJson(res, 403, { ok: false, error: "forbidden" });
                   return;
                 }

@@ -1172,7 +1172,26 @@ async function apply(ctx, config) {
                   sendJson(res, 405, { ok: false, error: "method not allowed" });
                   return;
                 }
-                if (String(req.headers["x-dshxf-token"] ?? "") !== bridgeToken) {
+                let authorized = false;
+                let connection;
+                try {
+                  connection = typeof ctx.get === "function" ? ctx.get("connection") : void 0;
+                } catch {
+                }
+                if (connection && typeof connection.admit === "function") {
+                  let admission;
+                  try {
+                    admission = connection.admit(req);
+                  } catch {
+                    admission = void 0;
+                  }
+                  if (admission && "rejection" in admission) {
+                    sendJson(res, admission.rejection ?? 401, { ok: false, error: "unauthorized" });
+                    return;
+                  }
+                  authorized = admission !== void 0;
+                }
+                if (!authorized && String(req.headers["x-dshxf-token"] ?? "") !== bridgeToken) {
                   sendJson(res, 403, { ok: false, error: "forbidden" });
                   return;
                 }

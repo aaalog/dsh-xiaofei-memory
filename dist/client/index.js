@@ -48,13 +48,12 @@ var styles_default = '/* dsh-xiaofei-memory management console styles */\n.dshxf
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
 async function callBridge(op, args = {}) {
+  const headers = { "content-type": "application/json" };
   const bridge = globalThis.DSHXF_BRIDGE;
-  if (!bridge || typeof bridge.token !== "string") {
-    throw new Error("\u6570\u636E\u6865\u672A\u6CE8\u5165\uFF1A\u5BBF\u4E3B\u4FA7\u66F4\u65B0\u540E\u9700\u8981\u91CD\u542F DSH \u4E00\u6B21");
-  }
+  if (bridge && typeof bridge.token === "string") headers["x-dshxf-token"] = bridge.token;
   const res = await fetch("dshxf/bridge", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-dshxf-token": bridge.token },
+    headers,
     body: JSON.stringify({ op, args })
   });
   let data = null;
@@ -62,7 +61,11 @@ async function callBridge(op, args = {}) {
     data = await res.json();
   } catch {
   }
-  if (!res.ok || !data || data.ok !== true) throw new Error(data?.error ?? `HTTP ${res.status}`);
+  if (!res.ok || !data || data.ok !== true) {
+    throw new Error(
+      res.status === 401 || res.status === 403 ? "\u672A\u6388\u6743\uFF1A\u6570\u636E\u6865\u62D2\u7EDD\u8BBF\u95EE\uFF08\u8BF7\u5237\u65B0\u9875\u9762\uFF09" : data?.error ?? `HTTP ${res.status}`
+    );
+  }
   return data.result;
 }
 function apply(ctx) {
