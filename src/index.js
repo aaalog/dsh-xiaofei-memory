@@ -445,8 +445,20 @@ export async function apply(ctx, config) {
       },
     },
     output: {
-      schema: { type: "object", additionalProperties: false, required: ["ok"], properties: { ok: { type: "boolean" } } },
-      render: (_args, v) => [{ type: "text", text: v?.ok ? "已检索。详见上方注入的记忆。" : "检索失败。" }],
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          recalled: { type: "integer" },
+          text: { type: "string" },
+        },
+      },
+      // The recalled text IS the result of an explicit retrieve call; the old
+      // render only pointed at the auto-injected block, which cost the caller
+      // the whole payload.
+      render: (_args, v) => [{ type: "text", text: v?.ok ? (v.text || "（没有命中记忆）") : "检索失败。" }],
     },
     async execute(args) {
       const recall = retrieveForPrompt(db, {
@@ -475,8 +487,22 @@ export async function apply(ctx, config) {
       },
     },
     output: {
-      schema: { type: "object", additionalProperties: false, required: ["ok"], properties: { ok: { type: "boolean" }, id: { type: "string" } } },
-      render: (_args, v) => [{ type: "text", text: v?.ok ? `已写入（${v?.id?.slice(-6) ?? ""}）。` : "写入失败。" }],
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          merged: { type: "boolean" },
+        },
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok
+          ? `已写入（${v?.id?.slice(-6) ?? ""}）${v?.merged ? "，已合并到已有条目" : ""}。`
+          : "写入失败。",
+      }],
     },
     async execute(args) {
       const res = addMemory(db, {

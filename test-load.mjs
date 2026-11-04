@@ -56,6 +56,25 @@ const recall = provided["memory-core"].retrieve("你觉得我是谁", { limit: 8
 check("memory-core retrieve produces recall", recall !== null && recall.text.length > 0);
 check("recall includes 赛博战友", recall.text.includes("赛博战友"));
 
+// Tool outputs must satisfy their declared output schema: the Host validates
+// the execute() value strictly (additionalProperties:false), so any extra key
+// turns a successful call into a reported failure.
+const retrieveTool = tools.find((t) => t.name === "memory_core_retrieve");
+const addFactTool = tools.find((t) => t.name === "memory_core_add_fact");
+function schemaViolations(tool, value) {
+  const props = Object.keys(tool.output.schema.properties ?? {});
+  const extra = Object.keys(value).filter((key) => !props.includes(key));
+  const missing = (tool.output.schema.required ?? []).filter((key) => !(key in value));
+  return [...extra.map((key) => `extra:${key}`), ...missing.map((key) => `missing:${key}`)];
+}
+const addResult = await addFactTool.execute({ content: "工具 schema 校验测试", layer: "recent" });
+check("add_fact output matches its schema", schemaViolations(addFactTool, addResult).length === 0, schemaViolations(addFactTool, addResult).join(","));
+check("add_fact reports merged", typeof addResult.merged === "boolean");
+const retResult = await retrieveTool.execute({ query: "赛博战友" });
+check("retrieve output matches its schema", schemaViolations(retrieveTool, retResult).length === 0, schemaViolations(retrieveTool, retResult).join(","));
+const retRendered = retrieveTool.output.render({}, retResult).map((block) => block.text ?? "").join("");
+check("retrieve render carries the recall text", retRendered.includes("<memory-recall>") && retRendered.includes("赛博战友"), retRendered.slice(0, 40));
+
 // Run the registered pre-step handler with a fake decision.
 const preStepHandler = handlers.get("agent/pre-step");
 const decision = {

@@ -1234,8 +1234,20 @@ async function apply(ctx, config) {
       }
     },
     output: {
-      schema: { type: "object", additionalProperties: false, required: ["ok"], properties: { ok: { type: "boolean" } } },
-      render: (_args, v) => [{ type: "text", text: v?.ok ? "\u5DF2\u68C0\u7D22\u3002\u8BE6\u89C1\u4E0A\u65B9\u6CE8\u5165\u7684\u8BB0\u5FC6\u3002" : "\u68C0\u7D22\u5931\u8D25\u3002" }]
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          recalled: { type: "integer" },
+          text: { type: "string" }
+        }
+      },
+      // The recalled text IS the result of an explicit retrieve call; the old
+      // render only pointed at the auto-injected block, which cost the caller
+      // the whole payload.
+      render: (_args, v) => [{ type: "text", text: v?.ok ? v.text || "\uFF08\u6CA1\u6709\u547D\u4E2D\u8BB0\u5FC6\uFF09" : "\u68C0\u7D22\u5931\u8D25\u3002" }]
     },
     async execute(args) {
       const recall = retrieveForPrompt(db, {
@@ -1264,8 +1276,20 @@ async function apply(ctx, config) {
       }
     },
     output: {
-      schema: { type: "object", additionalProperties: false, required: ["ok"], properties: { ok: { type: "boolean" }, id: { type: "string" } } },
-      render: (_args, v) => [{ type: "text", text: v?.ok ? `\u5DF2\u5199\u5165\uFF08${v?.id?.slice(-6) ?? ""}\uFF09\u3002` : "\u5199\u5165\u5931\u8D25\u3002" }]
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          merged: { type: "boolean" }
+        }
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok ? `\u5DF2\u5199\u5165\uFF08${v?.id?.slice(-6) ?? ""}\uFF09${v?.merged ? "\uFF0C\u5DF2\u5408\u5E76\u5230\u5DF2\u6709\u6761\u76EE" : ""}\u3002` : "\u5199\u5165\u5931\u8D25\u3002"
+      }]
     },
     async execute(args) {
       const res = addMemory(db, {
