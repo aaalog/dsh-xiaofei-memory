@@ -1,0 +1,8 @@
+# Local test fixtures (junction to profile deps / mock dsh-llm)
+node_modules/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# DSH internal session data (meow-memory DB)
+.dsh-meow/
