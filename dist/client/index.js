@@ -72,34 +72,8 @@ function apply(ctx) {
     injectCss();
   } catch {
   }
-  let disposeEntry = null;
-  let disposeInjection = null;
   let disposeHeader = null;
-  const registerSection = () => {
-    try {
-      disposeEntry?.();
-    } catch {
-    }
-    try {
-      disposeEntry = ctx.slots.register(
-        {
-          name: "settings.section",
-          id: NS,
-          order: 30,
-          label: () => "\u5C0F\u80A5\u9C7C\u8BB0\u5FC6\u5F15\u64CE",
-          inject: () => ({ scope: getScope(ctx) })
-        },
-        ConsolePage
-      );
-    } catch (e) {
-      console.warn("[dsh-xiaofei-memory] settings.section unavailable:", e);
-    }
-  };
-  try {
-    disposeInjection = ctx.slots.inject("settings.section", registerSection);
-  } catch (e) {
-    console.warn("[dsh-xiaofei-memory] settings slot inject failed", e);
-  }
+  const disposeSettings = mountSettings(ctx);
   try {
     disposeHeader = ctx.slots.inject("conversation.session.header.actions", () => {
       try {
@@ -122,14 +96,86 @@ function apply(ctx) {
     } catch {
     }
     try {
-      disposeInjection?.();
-    } catch {
-    }
-    try {
-      disposeEntry?.();
+      disposeSettings?.();
     } catch {
     }
   };
+}
+function mountSettings(ctx) {
+  const mountWithScope = (scope) => {
+    let disposeEntry = null;
+    let disposeInjection = null;
+    const registerSection = () => {
+      try {
+        disposeEntry?.();
+      } catch {
+      }
+      try {
+        disposeEntry = ctx.slots.register(
+          {
+            name: "settings.section",
+            id: NS,
+            order: 35,
+            label: () => "\u5C0F\u80A5\u9C7C\u8BB0\u5FC6\u5F15\u64CE",
+            inject: () => ({ scope })
+          },
+          ConsolePage
+        );
+      } catch (e) {
+        console.warn("[dsh-xiaofei-memory] settings.section unavailable:", e);
+      }
+    };
+    try {
+      disposeInjection = ctx.slots.inject("settings.section", registerSection);
+    } catch (e) {
+      console.warn("[dsh-xiaofei-memory] settings slot inject failed", e);
+    }
+    return () => {
+      try {
+        disposeInjection?.();
+      } catch {
+      }
+      try {
+        disposeEntry?.();
+      } catch {
+      }
+    };
+  };
+  const settingsScope = softService(ctx, "settingsScope");
+  if (settingsScope !== void 0 && settingsScope !== null) {
+    return mountWithScope(typeof settingsScope.bind === "function" ? settingsScope.bind({ namespace: NS }) : settingsScope);
+  }
+  let disposer = null;
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts += 1;
+    const forms = softService(ctx, "configForms");
+    if (forms !== void 0 && typeof forms.get === "function") {
+      clearInterval(timer);
+      disposer = mountWithScope(forms.get(NS));
+    } else if (attempts >= 75) {
+      clearInterval(timer);
+      console.info("[dsh-xiaofei-memory] configForms not ready; settings section unregistered");
+    }
+  }, 400);
+  return () => {
+    clearInterval(timer);
+    try {
+      disposer?.();
+    } catch {
+    }
+  };
+}
+function softService(ctx, name) {
+  try {
+    if (typeof ctx.get === "function") return ctx.get(name);
+  } catch {
+  }
+  try {
+    return ctx[name];
+  } catch {
+    return void 0;
+  }
 }
 function HeaderButton() {
   const [open, setOpen] = React.useState(false);
@@ -165,13 +211,14 @@ function HeaderButton() {
   );
 }
 function getScope(ctx) {
-  try {
-    if (typeof ctx.get === "function") {
-      const s = ctx.get("settingsScope");
-      if (s && typeof s.bind === "function") return s.bind({ namespace: NS });
-      if (s) return s;
+  const s = softService(ctx, "settingsScope");
+  if (s !== void 0 && s !== null) return typeof s.bind === "function" ? s.bind({ namespace: NS }) : s;
+  const forms = softService(ctx, "configForms");
+  if (forms !== void 0 && typeof forms.get === "function") {
+    try {
+      return forms.get(NS);
+    } catch {
     }
-  } catch {
   }
   return void 0;
 }

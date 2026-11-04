@@ -32,36 +32,12 @@ function hostService(ctx: any, name: string): any {
 export function apply(ctx: any): () => void {
   (window as any).__ctx__ = ctx;
   try { injectCss(); } catch { /* ignore */ }
-  let disposeEntry: (() => void) | null = null;
-  let disposeInjection: (() => void) | null = null;
   let disposeHeader: (() => void) | null = null;
-  // Primary mount: a Settings page section.
-  const registerSection = () => {
-    try { disposeEntry?.(); } catch { /* ignore */ }
-    try {
-      disposeEntry = ctx.slots.register(
-        {
-          name: "settings.section",
-          id: NS,
-          order: 30,
-          label: () => "小肥鱼记忆引擎",
-          inject: () => ({ scope: getScope(ctx) }),
-        },
-        ConsolePage
-      );
-    } catch (e) {
-      // The settings.section slot may not be declared in this profile (the
-      // settings-UI shell can be absent). Never crash DSH boot; the section
-      // mounts automatically once the slot is declared.
-      console.warn("[dsh-xiaofei-memory] settings.section unavailable:", e);
-    }
-  };
-  try { disposeInjection = ctx.slots.inject("settings.section", registerSection); }
-  catch (e) { console.warn("[dsh-xiaofei-memory] settings slot inject failed", e); }
+  // Primary mount: a Settings page section. Mirror meow-memory: obtain a bound
+  // settings scope, or poll the `configForms` service until it is ready.
+  const disposeSettings = mountSettings(ctx);
 
-  // Guaranteed-access fallback: a header button in the conversation view that
-  // opens the console as a floating overlay. This slot is used by other
-  // installed plugins, so it exists even when the settings shell does not.
+  // Fallback: a header button that opens the console as a floating overlay.
   try {
     disposeHeader = ctx.slots.inject("conversation.session.header.actions", () => {
       try {
@@ -78,9 +54,71 @@ export function apply(ctx: any): () => void {
 
   return () => {
     try { disposeHeader?.(); } catch { /* ignore */ }
-    try { disposeInjection?.(); } catch { /* ignore */ }
-    try { disposeEntry?.(); } catch { /* ignore */ }
+    try { disposeSettings?.(); } catch { /* ignore */ }
   };
+}
+
+/**
+ * Mount the console into the Settings page section, following meow-memory's
+ * strategy: use settingsScope.bind({namespace}) when present, otherwise poll
+ * the configForms service (up to ~30s) and mount with configForms.get(ns).
+ */
+function mountSettings(ctx: any): () => void {
+  const mountWithScope = (scope: any) => {
+    let disposeEntry: (() => void) | null = null;
+    let disposeInjection: (() => void) | null = null;
+    const registerSection = () => {
+      try { disposeEntry?.(); } catch { /* ignore */ }
+      try {
+        disposeEntry = ctx.slots.register(
+          {
+            name: "settings.section",
+            id: NS,
+            order: 35,
+            label: () => "小肥鱼记忆引擎",
+            inject: () => ({ scope }),
+          },
+          ConsolePage
+        );
+      } catch (e) {
+        console.warn("[dsh-xiaofei-memory] settings.section unavailable:", e);
+      }
+    };
+    try { disposeInjection = ctx.slots.inject("settings.section", registerSection); }
+    catch (e) { console.warn("[dsh-xiaofei-memory] settings slot inject failed", e); }
+    return () => {
+      try { disposeInjection?.(); } catch { /* ignore */ }
+      try { disposeEntry?.(); } catch { /* ignore */ }
+    };
+  };
+
+  const settingsScope = softService(ctx, "settingsScope");
+  if (settingsScope !== undefined && settingsScope !== null) {
+    return mountWithScope(typeof settingsScope.bind === "function" ? settingsScope.bind({ namespace: NS }) : settingsScope);
+  }
+
+  let disposer: (() => void) | null = null;
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts += 1;
+    const forms = softService(ctx, "configForms");
+    if (forms !== undefined && typeof forms.get === "function") {
+      clearInterval(timer);
+      disposer = mountWithScope(forms.get(NS));
+    } else if (attempts >= 75) {
+      clearInterval(timer);
+      console.info("[dsh-xiaofei-memory] configForms not ready; settings section unregistered");
+    }
+  }, 400);
+  return () => {
+    clearInterval(timer);
+    try { disposer?.(); } catch { /* ignore */ }
+  };
+}
+
+function softService(ctx: any, name: string): any {
+  try { if (typeof ctx.get === "function") return ctx.get(name); } catch { /* ignore */ }
+  try { return ctx[name]; } catch { return undefined; }
 }
 
 /** Header button that toggles a floating console overlay. */
@@ -119,13 +157,12 @@ function HeaderButton() {
 }
 
 function getScope(ctx: any): any {
-  try {
-    if (typeof ctx.get === "function") {
-      const s = ctx.get("settingsScope");
-      if (s && typeof s.bind === "function") return s.bind({ namespace: NS });
-      if (s) return s;
-    }
-  } catch { /* ignore */ }
+  const s = softService(ctx, "settingsScope");
+  if (s !== undefined && s !== null) return typeof s.bind === "function" ? s.bind({ namespace: NS }) : s;
+  const forms = softService(ctx, "configForms");
+  if (forms !== undefined && typeof forms.get === "function") {
+    try { return forms.get(NS); } catch { /* ignore */ }
+  }
   return undefined;
 }
 

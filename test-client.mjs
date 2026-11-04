@@ -46,11 +46,13 @@ try {
 ok(exportsObj && typeof exportsObj.apply === "function", "factory exports apply()");
 ok(exportsObj && Array.isArray(exportsObj.inject), "factory exports inject[]");
 
-// Call apply() with a mock ctx that supports slots.register/inject.
+// Call apply() with a mock ctx that supports slots.register/inject and exposes
+// a settings scope (settingsScope.bind) so the settings section mounts.
 const slotsRegistered = [];
 const slotsInjected = [];
+const scopeService = { bind: () => ({ mode: "session", subscribe: () => () => {}, getSnapshot: () => ({ user: {}, mode: "session" }) }) };
 const mockCtx = {
-  get: () => undefined,
+  get: (name) => (name === "settingsScope" ? scopeService : undefined),
   slots: {
     register: (def, comp) => { slotsRegistered.push({ def, comp }); return () => {}; },
     // Simulate the slot being declared: the inject callback fires immediately.
@@ -70,10 +72,10 @@ ok(typeof disposer === "function", "apply returns disposer");
 // Regression: an UNdeclared settings.section slot must NOT make apply() throw
 // (this exact case previously crashed DSH web boot).
 const crashingCtx = {
-  get: () => undefined,
+  get: (name) => (name === "settingsScope" ? scopeService : undefined),
   slots: {
     register: () => { throw new Error('slot "settings.section" is not declared'); },
-    inject: () => () => {},
+    inject: (slot, fn) => { try { fn(); } catch { /* swallow as the guard does */ } return () => {}; },
   },
 };
 let crashThrew = false;
