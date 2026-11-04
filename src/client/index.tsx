@@ -29,6 +29,28 @@ function hostService(ctx: any, name: string): any {
   return undefined;
 }
 
+/**
+ * Data bridge to the host half. DSH only exposes build-time generated Remote
+ * namespaces to the page, so this plugin's console operations travel over the
+ * host's token-gated loopback route (`/dshxf/bridge`). The token is injected
+ * into the page as the `DSHXF_BRIDGE` global at index render time.
+ */
+async function callBridge(op: string, args: any = {}): Promise<any> {
+  const bridge = (globalThis as any).DSHXF_BRIDGE;
+  if (!bridge || typeof bridge.token !== "string") {
+    throw new Error("数据桥未注入：宿主侧更新后需要重启 DSH 一次");
+  }
+  const res = await fetch("dshxf/bridge", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-dshxf-token": bridge.token },
+    body: JSON.stringify({ op, args }),
+  });
+  let data: any = null;
+  try { data = await res.json(); } catch { /* non-JSON body */ }
+  if (!res.ok || !data || data.ok !== true) throw new Error(data?.error ?? `HTTP ${res.status}`);
+  return data.result;
+}
+
 export function apply(ctx: any): () => void {
   (window as any).__ctx__ = ctx;
   try { injectCss(); } catch { /* ignore */ }
@@ -244,15 +266,31 @@ function ConsolePage(props: any) {
 
 // ── Tab 1: Roles & routing ─────────────────────────────────────────────────
 function RolesTab({ scope, user }: { scope: any; user: any }) {
-  const roles: Role[] = Array.isArray(user?.roles) ? user.roles : [];
-  const [draft, setDraft] = React.useState<Role[]>(roles.map((r) => ({ ...r })));
+  const scopeReady = !!scope && typeof scope.set === "function";
+  const propRoles: Role[] = Array.isArray(user?.roles) ? user.roles : [];
+  const [draft, setDraft] = React.useState<Role[]>(propRoles.map((r) => ({ ...r })));
   const [msg, setMsg] = React.useState("");
-  React.useEffect(() => setDraft(roles.map((r) => ({ ...r }))), [JSON.stringify(roles)]);
+  React.useEffect(() => {
+    if (scopeReady) {
+      setDraft(propRoles.map((r) => ({ ...r })));
+      return;
+    }
+    callBridge("roles")
+      .then((rows) => setDraft(Array.isArray(rows) ? rows.map((r: Role) => ({ ...r })) : []))
+      .catch((e: any) => setMsg("读取角色失败: " + (e?.message ?? e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeReady, JSON.stringify(propRoles)]);
 
   const save = async () => {
     try {
-      const ok = await scope.set("roles", draft);
-      setMsg(ok === false ? "保存未生效" : "已保存 ✓");
+      if (scopeReady) {
+        const ok = await scope.set("roles", draft);
+        setMsg(ok === false ? "保存未生效" : "已保存 ✓");
+      } else {
+        const next = await callBridge("updateRoles", { roles: draft });
+        if (Array.isArray(next)) setDraft(next.map((r: Role) => ({ ...r })));
+        setMsg("已保存 ✓");
+      }
     } catch (e: any) { setMsg("保存失败: " + (e?.message ?? e)); }
   };
   const mutate = (i: number, patch: Partial<Role>) =>
@@ -287,7 +325,6 @@ function RolesTab({ scope, user }: { scope: any; user: any }) {
 
 // ── Tab 2: Memory graph ────────────────────────────────────────────────────
 function MemoriesTab({ scope, user }: { scope: any; user: any }) {
-  const svc = hostService(window.__ctx__, "memoryConsole") as any;
   const roles: Role[] = Array.isArray(user?.roles) ? user.roles : [];
   const [query, setQuery] = React.useState("");
   const [roleId, setRoleId] = React.useState("all");
@@ -296,16 +333,18 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
   const [msg, setMsg] = React.useState("");
 
   const refreshStats = () => {
-    if (!svc?.getMemoryStats) return;
-    try { setStats(svc.getMemoryStats()); } catch (e: any) { setMsg("统计失败: " + (e?.message ?? e)); }
+    callBridge("stats")
+      .then((s) => setStats(s))
+      .catch((e: any) => setMsg("统计失败: " + (e?.message ?? e)));
   };
   const doSearch = () => {
-    if (!svc?.searchMemory) { setMsg("宿主 memory-console 不可用（数据桥未建立）。"); return; }
-    try {
-      const res = svc.searchMemory(query, roleId);
-      setRows(Array.isArray(res) ? res : []);
-      setMsg(`找到 ${Array.isArray(res) ? res.length : 0} 条`);
-    } catch (e: any) { setMsg("检索失败: " + (e?.message ?? e)); }
+    setMsg("检索中…");
+    callBridge("search", { query, roleId })
+      .then((res) => {
+        setRows(Array.isArray(res) ? res : []);
+        setMsg(`找到 ${Array.isArray(res) ? res.length : 0} 条`);
+      })
+      .catch((e: any) => setMsg("检索失败: " + (e?.message ?? e)));
   };
   React.useEffect(() => { refreshStats(); }, []);
 
@@ -351,23 +390,22 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
 
 // ── Tab 3: Nightly sleep ───────────────────────────────────────────────────
 function SleepTab({ scope, user }: { scope: any; user: any }) {
-  const svc = hostService(window.__ctx__, "memoryConsole") as any;
   const hour = Number(user?.sleepTimeHour ?? 3);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [hourDraft, setHourDraft] = React.useState(hour);
   const saveHour = async () => {
     try {
+      if (!scope || typeof scope.set !== "function") throw new Error("设置命名空间不可用");
       await scope.set("sleepTimeHour", hourDraft);
       setMsg("时间已保存 ✓");
     } catch (e: any) { setMsg("保存失败: " + (e?.message ?? e)); }
   };
   const run = async () => {
-    if (!svc?.triggerNightlySleep) { setMsg("宿主 memory-console 不可用（数据桥未建立）。"); return; }
     setBusy(true);
     setMsg("正在执行夜间代谢…");
     try {
-      const r = await svc.triggerNightlySleep();
+      const r = await callBridge("sleep");
       setMsg(`完成：${typeof r === "object" && r ? (r.summarized ?? r.archived ?? 0) : r} 条处理`);
     } catch (e: any) { setMsg("执行失败: " + (e?.message ?? e)); }
     setBusy(false);
@@ -395,17 +433,20 @@ function SleepTab({ scope, user }: { scope: any; user: any }) {
 
 // ── Tab 4: System ──────────────────────────────────────────────────────────
 function SystemTab({ scope, user }: { scope: any; user: any }) {
-  const svc = hostService(window.__ctx__, "memoryConsole") as any;
   const [model, setModel] = React.useState(String(user?.extractionModel ?? "deepseek-chat"));
   const [souls, setSouls] = React.useState<any[]>([]);
   const [msg, setMsg] = React.useState("");
   const saveModel = async () => {
-    try { await scope.set("extractionModel", model); setMsg("模型已保存 ✓"); }
-    catch (e: any) { setMsg("保存失败: " + (e?.message ?? e)); }
+    try {
+      if (!scope || typeof scope.set !== "function") throw new Error("设置命名空间不可用");
+      await scope.set("extractionModel", model);
+      setMsg("模型已保存 ✓");
+    } catch (e: any) { setMsg("保存失败: " + (e?.message ?? e)); }
   };
   const loadSouls = () => {
-    if (!svc?.listSoulMemories) { setMsg("宿主 memory-console 不可用（数据桥未建立）。"); return; }
-    try { setSouls(svc.listSoulMemories()); } catch (e: any) { setMsg("读取失败: " + (e?.message ?? e)); }
+    callBridge("souls")
+      .then((rows) => setSouls(Array.isArray(rows) ? rows : []))
+      .catch((e: any) => setMsg("读取失败: " + (e?.message ?? e)));
   };
   React.useEffect(() => { loadSouls(); }, []);
   return (

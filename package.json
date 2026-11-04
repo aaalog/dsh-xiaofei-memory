@@ -55,6 +55,6 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "node build.mjs",
     "build:client": "node build.mjs",
-    "test": "node test-engine.mjs && node test-load.mjs && node test-console.mjs && node build.mjs && node test-client.mjs && node test-dist.mjs"
+    "test": "node test-engine.mjs && node test-load.mjs && node test-console.mjs && node test-bridge.mjs && node build.mjs && node test-client.mjs && node test-dist.mjs"
   }
 }

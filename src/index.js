@@ -4,6 +4,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 
 import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed } from "./db.js";
@@ -298,6 +299,97 @@ export async function apply(ctx, config) {
     },
   });
 
+  // --- Management console data bridge (HTTP) ----------------------------
+  // The Web console cannot reach arbitrary host services: DSH exposes only
+  // build-time generated Remote namespaces to the browser. So the console's
+  // data operations travel over an owner-only, token-gated loopback route.
+  // The random token is served to the page through a `global` index row and
+  // is only used by this plugin's own bundle.
+  const bridgeToken = randomBytes(16).toString("hex");
+  try { metaSet(db, "bridge.token", bridgeToken); } catch { /* ignore */ }
+  const webServer = safeService(ctx, "webServer");
+  if (webServer && typeof webServer.register === "function") {
+    const sendJson = (res, status, body) => {
+      try {
+        res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        res.end(JSON.stringify(body));
+      } catch { /* client already gone */ }
+    };
+    const readBody = (req) => new Promise((resolve, reject) => {
+      let size = 0;
+      const chunks = [];
+      req.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > 1 << 20) { reject(new Error("payload too large")); try { req.destroy(); } catch { /* ignore */ } return; }
+        chunks.push(chunk);
+      });
+      req.on("end", () => {
+        try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}); }
+        catch { reject(new Error("invalid JSON body")); }
+      });
+      req.on("error", reject);
+    });
+    const runBridgeOp = async (op, args) => {
+      switch (op) {
+        case "stats": return getMemoryStats(db);
+        case "search":
+          return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: loadEvolution(db).timeDecay });
+        case "preview":
+          return previewRecall(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", maxTokens: config.maxRecallTokens });
+        case "sleep": {
+          const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
+          return triggerNightlySleep(db, { summarize });
+        }
+        case "souls": return listSoulMemories(db);
+        case "roles": return liveRoles.map((r) => ({ ...r }));
+        case "updateRoles": return core.updateRoles(args?.roles);
+        case "config":
+          return {
+            roles: liveRoles.map((r) => ({ ...r })),
+            enabled: config.enabled,
+            sleepTimeHour: config.sleepTimeHour,
+            extractionModel: config.extractionModel,
+          };
+        default: throw new Error(`unknown op "${op}"`);
+      }
+    };
+    try {
+      const disposeBridge = webServer.register({
+        kind: "exact",
+        path: "/dshxf/bridge",
+        handler: (req, res) => {
+          void (async () => {
+            try {
+              if (req.method === "GET") {
+                sendJson(res, 200, { ok: true, bridge: "dsh-xiaofei-memory" });
+                return;
+              }
+              if (req.method !== "POST") { sendJson(res, 405, { ok: false, error: "method not allowed" }); return; }
+              if (String(req.headers["x-dshxf-token"] ?? "") !== bridgeToken) {
+                sendJson(res, 403, { ok: false, error: "forbidden" });
+                return;
+              }
+              const body = await readBody(req);
+              const result = await runBridgeOp(String(body?.op ?? ""), body?.args ?? {});
+              sendJson(res, 200, { ok: true, result });
+            } catch (e) {
+              sendJson(res, 400, { ok: false, error: String(e?.message ?? e) });
+            }
+          })();
+        },
+      });
+      ctx.effect(() => () => { try { disposeBridge?.(); } catch { /* ignore */ } });
+      ctx.on("webserver/index-inject", (table) => {
+        try { table.push({ kind: "global", name: "DSHXF_BRIDGE", value: { token: bridgeToken } }); } catch { /* ignore */ }
+      });
+      logger?.info?.("dsh-xiaofei-memory: console data bridge mounted at /dshxf/bridge");
+    } catch (e) {
+      logger?.warn?.(`dsh-xiaofei-memory: console data bridge unavailable: ${e?.message ?? e}`);
+    }
+  } else {
+    logger?.info?.("dsh-xiaofei-memory: webServer unavailable; console data bridge skipped");
+  }
+
   // --- Tools: expose retrieve + addFact ---------------------------------
   const disposeRetrieve = ctx.tools.register({
     name: "memory_core_retrieve",
@@ -364,6 +456,17 @@ export async function apply(ctx, config) {
     if (typeof disposeAddFact === "function") disposeAddFact();
     closeMemoryDb(db);
   });
+}
+
+/** Read an optional service without making it a hard inject dependency. */
+function safeService(ctx, name) {
+  try {
+    if (typeof ctx.get === "function") {
+      const value = ctx.get(name);
+      if (value !== undefined) return value;
+    }
+  } catch { /* service not ready */ }
+  try { return ctx[name]; } catch { return undefined; }
 }
 
 /** Build a minimal LLM caller from ctx.llm if present; else null. */

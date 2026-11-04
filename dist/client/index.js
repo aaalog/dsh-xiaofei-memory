@@ -47,23 +47,23 @@ var styles_default = '/* dsh-xiaofei-memory management console styles */\n.dshxf
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
-function hostService(ctx, name) {
+async function callBridge(op, args = {}) {
+  const bridge = globalThis.DSHXF_BRIDGE;
+  if (!bridge || typeof bridge.token !== "string") {
+    throw new Error("\u6570\u636E\u6865\u672A\u6CE8\u5165\uFF1A\u5BBF\u4E3B\u4FA7\u66F4\u65B0\u540E\u9700\u8981\u91CD\u542F DSH \u4E00\u6B21");
+  }
+  const res = await fetch("dshxf/bridge", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-dshxf-token": bridge.token },
+    body: JSON.stringify({ op, args })
+  });
+  let data = null;
   try {
-    const remote = ctx?.remote;
-    if (remote && typeof remote === "object") {
-      const svc = remote[name];
-      if (svc) return svc;
-    }
+    data = await res.json();
   } catch {
   }
-  try {
-    if (typeof ctx.get === "function") {
-      const direct = ctx.get(name);
-      if (direct) return direct;
-    }
-  } catch {
-  }
-  return void 0;
+  if (!res.ok || !data || data.ok !== true) throw new Error(data?.error ?? `HTTP ${res.status}`);
+  return data.result;
 }
 function apply(ctx) {
   window.__ctx__ = ctx;
@@ -285,14 +285,27 @@ function ConsolePage(props) {
   ))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-panel", role: "tabpanel" }, mode === "memory" && /* @__PURE__ */ React.createElement("div", { className: "dshxf-note" }, "\u955C\u50CF\u6A21\u5F0F\uFF1A\u914D\u7F6E\u53EA\u8BFB\uFF0C\u9700\u9000\u51FA\u8BB0\u5FC6\u955C\u50CF\u624D\u80FD\u4FEE\u6539\u3002"), tab === "roles" && /* @__PURE__ */ React.createElement(RolesTab, { scope, user }), tab === "memories" && /* @__PURE__ */ React.createElement(MemoriesTab, { scope, user }), tab === "sleep" && /* @__PURE__ */ React.createElement(SleepTab, { scope, user }), tab === "system" && /* @__PURE__ */ React.createElement(SystemTab, { scope, user })));
 }
 function RolesTab({ scope, user }) {
-  const roles = Array.isArray(user?.roles) ? user.roles : [];
-  const [draft, setDraft] = React.useState(roles.map((r) => ({ ...r })));
+  const scopeReady = !!scope && typeof scope.set === "function";
+  const propRoles = Array.isArray(user?.roles) ? user.roles : [];
+  const [draft, setDraft] = React.useState(propRoles.map((r) => ({ ...r })));
   const [msg, setMsg] = React.useState("");
-  React.useEffect(() => setDraft(roles.map((r) => ({ ...r }))), [JSON.stringify(roles)]);
+  React.useEffect(() => {
+    if (scopeReady) {
+      setDraft(propRoles.map((r) => ({ ...r })));
+      return;
+    }
+    callBridge("roles").then((rows) => setDraft(Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [])).catch((e) => setMsg("\u8BFB\u53D6\u89D2\u8272\u5931\u8D25: " + (e?.message ?? e)));
+  }, [scopeReady, JSON.stringify(propRoles)]);
   const save = async () => {
     try {
-      const ok = await scope.set("roles", draft);
-      setMsg(ok === false ? "\u4FDD\u5B58\u672A\u751F\u6548" : "\u5DF2\u4FDD\u5B58 \u2713");
+      if (scopeReady) {
+        const ok = await scope.set("roles", draft);
+        setMsg(ok === false ? "\u4FDD\u5B58\u672A\u751F\u6548" : "\u5DF2\u4FDD\u5B58 \u2713");
+      } else {
+        const next = await callBridge("updateRoles", { roles: draft });
+        if (Array.isArray(next)) setDraft(next.map((r) => ({ ...r })));
+        setMsg("\u5DF2\u4FDD\u5B58 \u2713");
+      }
     } catch (e) {
       setMsg("\u4FDD\u5B58\u5931\u8D25: " + (e?.message ?? e));
     }
@@ -325,7 +338,6 @@ function RolesTab({ scope, user }) {
   ), /* @__PURE__ */ React.createElement("label", { className: "dshxf-check" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: r.enabled, onChange: (e) => mutate(i, { enabled: e.target.checked }) }), "\u542F\u7528"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-danger", onClick: () => setDraft((p) => p.filter((_, idx) => idx !== i)) }, "\u5220"))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: () => setDraft((p) => [...p, { id: "", name: "", description: "", enabled: true }]) }, "+ \u6DFB\u52A0\u89D2\u8272"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-primary", onClick: save }, "\u4FDD\u5B58\u89D2\u8272"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)));
 }
 function MemoriesTab({ scope, user }) {
-  const svc = hostService(window.__ctx__, "memoryConsole");
   const roles = Array.isArray(user?.roles) ? user.roles : [];
   const [query, setQuery] = React.useState("");
   const [roleId, setRoleId] = React.useState("all");
@@ -333,25 +345,14 @@ function MemoriesTab({ scope, user }) {
   const [stats, setStats] = React.useState(null);
   const [msg, setMsg] = React.useState("");
   const refreshStats = () => {
-    if (!svc?.getMemoryStats) return;
-    try {
-      setStats(svc.getMemoryStats());
-    } catch (e) {
-      setMsg("\u7EDF\u8BA1\u5931\u8D25: " + (e?.message ?? e));
-    }
+    callBridge("stats").then((s) => setStats(s)).catch((e) => setMsg("\u7EDF\u8BA1\u5931\u8D25: " + (e?.message ?? e)));
   };
   const doSearch = () => {
-    if (!svc?.searchMemory) {
-      setMsg("\u5BBF\u4E3B memory-console \u4E0D\u53EF\u7528\uFF08\u6570\u636E\u6865\u672A\u5EFA\u7ACB\uFF09\u3002");
-      return;
-    }
-    try {
-      const res = svc.searchMemory(query, roleId);
+    setMsg("\u68C0\u7D22\u4E2D\u2026");
+    callBridge("search", { query, roleId }).then((res) => {
       setRows(Array.isArray(res) ? res : []);
       setMsg(`\u627E\u5230 ${Array.isArray(res) ? res.length : 0} \u6761`);
-    } catch (e) {
-      setMsg("\u68C0\u7D22\u5931\u8D25: " + (e?.message ?? e));
-    }
+    }).catch((e) => setMsg("\u68C0\u7D22\u5931\u8D25: " + (e?.message ?? e)));
   };
   React.useEffect(() => {
     refreshStats();
@@ -368,13 +369,13 @@ function MemoriesTab({ scope, user }) {
   ), /* @__PURE__ */ React.createElement("select", { className: "dshxf-in", value: roleId, onChange: (e) => setRoleId(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u5168\u90E8\u89D2\u8272"), roles.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.name))), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-primary", onClick: doSearch }, "\u68C0\u7D22"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: refreshStats }, "\u5237\u65B0\u7EDF\u8BA1")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-msg" }, msg), /* @__PURE__ */ React.createElement("ul", { className: "dshxf-list" }, rows.map((r) => /* @__PURE__ */ React.createElement("li", { key: r.id, className: "dshxf-mem" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-meta" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.roleId), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.layer), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag dshxf-str" }, "\u5F3A\u5EA6 ", r.strength.toFixed?.(2) ?? r.strength), typeof r.score === "number" && /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u5206 ", r.score.toFixed(2))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-body" }, r.content)))));
 }
 function SleepTab({ scope, user }) {
-  const svc = hostService(window.__ctx__, "memoryConsole");
   const hour = Number(user?.sleepTimeHour ?? 3);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [hourDraft, setHourDraft] = React.useState(hour);
   const saveHour = async () => {
     try {
+      if (!scope || typeof scope.set !== "function") throw new Error("\u8BBE\u7F6E\u547D\u540D\u7A7A\u95F4\u4E0D\u53EF\u7528");
       await scope.set("sleepTimeHour", hourDraft);
       setMsg("\u65F6\u95F4\u5DF2\u4FDD\u5B58 \u2713");
     } catch (e) {
@@ -382,14 +383,10 @@ function SleepTab({ scope, user }) {
     }
   };
   const run = async () => {
-    if (!svc?.triggerNightlySleep) {
-      setMsg("\u5BBF\u4E3B memory-console \u4E0D\u53EF\u7528\uFF08\u6570\u636E\u6865\u672A\u5EFA\u7ACB\uFF09\u3002");
-      return;
-    }
     setBusy(true);
     setMsg("\u6B63\u5728\u6267\u884C\u591C\u95F4\u4EE3\u8C22\u2026");
     try {
-      const r = await svc.triggerNightlySleep();
+      const r = await callBridge("sleep");
       setMsg(`\u5B8C\u6210\uFF1A${typeof r === "object" && r ? r.summarized ?? r.archived ?? 0 : r} \u6761\u5904\u7406`);
     } catch (e) {
       setMsg("\u6267\u884C\u5931\u8D25: " + (e?.message ?? e));
@@ -409,12 +406,12 @@ function SleepTab({ scope, user }) {
   )), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: saveHour }, "\u4FDD\u5B58\u65F6\u95F4")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-danger dshxf-lg", disabled: busy, onClick: run }, busy ? "\u4EE3\u8C22\u4E2D\u2026" : "\u7ACB\u5373\u6267\u884C\u591C\u95F4\u4EE3\u8C22"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)), /* @__PURE__ */ React.createElement("p", { className: "dshxf-note" }, "\u591C\u95F4\u4EE3\u8C22\u4F1A\u6309\u5B9E\u4F53\u805A\u7C7B\uFF0C\u628A\u5BC6\u96C6\u7684\u540C\u4E3B\u9898\u8BB0\u5FC6\u538B\u7F29\u6210 100 \u5B57\u6838\u5FC3\uFF0C\u5E76\u5F52\u6863\u539F\u59CB\u6761\u76EE\u3001\u6E05\u7406\u5197\u4F59\u3002"));
 }
 function SystemTab({ scope, user }) {
-  const svc = hostService(window.__ctx__, "memoryConsole");
   const [model, setModel] = React.useState(String(user?.extractionModel ?? "deepseek-chat"));
   const [souls, setSouls] = React.useState([]);
   const [msg, setMsg] = React.useState("");
   const saveModel = async () => {
     try {
+      if (!scope || typeof scope.set !== "function") throw new Error("\u8BBE\u7F6E\u547D\u540D\u7A7A\u95F4\u4E0D\u53EF\u7528");
       await scope.set("extractionModel", model);
       setMsg("\u6A21\u578B\u5DF2\u4FDD\u5B58 \u2713");
     } catch (e) {
@@ -422,15 +419,7 @@ function SystemTab({ scope, user }) {
     }
   };
   const loadSouls = () => {
-    if (!svc?.listSoulMemories) {
-      setMsg("\u5BBF\u4E3B memory-console \u4E0D\u53EF\u7528\uFF08\u6570\u636E\u6865\u672A\u5EFA\u7ACB\uFF09\u3002");
-      return;
-    }
-    try {
-      setSouls(svc.listSoulMemories());
-    } catch (e) {
-      setMsg("\u8BFB\u53D6\u5931\u8D25: " + (e?.message ?? e));
-    }
+    callBridge("souls").then((rows) => setSouls(Array.isArray(rows) ? rows : [])).catch((e) => setMsg("\u8BFB\u53D6\u5931\u8D25: " + (e?.message ?? e)));
   };
   React.useEffect(() => {
     loadSouls();
