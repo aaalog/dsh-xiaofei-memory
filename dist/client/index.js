@@ -114,6 +114,7 @@ function getScope(ctx) {
   try {
     if (typeof ctx.get === "function") {
       const s = ctx.get("settingsScope");
+      if (s && typeof s.bind === "function") return s.bind({ namespace: NS });
       if (s) return s;
     }
   } catch {
@@ -134,9 +135,15 @@ function injectCss() {
 }
 var inject = ["slots"];
 function useConfig(scope) {
-  if (!scope) return { user: {}, mode: "unknown" };
-  const subscribe = React.useCallback((cb) => scope.subscribe(cb), [scope]);
-  const getSnapshot = React.useCallback(() => scope.getSnapshot(), [scope]);
+  const subscribe = React.useCallback(
+    (cb) => scope && typeof scope.subscribe === "function" ? scope.subscribe(cb) : () => {
+    },
+    [scope]
+  );
+  const getSnapshot = React.useCallback(
+    () => scope && typeof scope.getSnapshot === "function" ? scope.getSnapshot() : { user: {}, mode: "unknown" },
+    [scope]
+  );
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 function ConsolePage(props) {

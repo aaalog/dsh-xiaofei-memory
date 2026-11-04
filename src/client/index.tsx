@@ -68,6 +68,7 @@ function getScope(ctx: any): any {
   try {
     if (typeof ctx.get === "function") {
       const s = ctx.get("settingsScope");
+      if (s && typeof s.bind === "function") return s.bind({ namespace: NS });
       if (s) return s;
     }
   } catch { /* ignore */ }
@@ -89,10 +90,17 @@ function injectCss() {
 export const inject = ["slots"];
 
 // ── shared hook: read config from settings scope ────────────────────────────
+// Always calls the same hooks regardless of `scope`, so an initially-missing
+// scope (then present) cannot violate the React hooks order.
 function useConfig(scope: any): { user: any; mode: string } {
-  if (!scope) return { user: {}, mode: "unknown" };
-  const subscribe = React.useCallback((cb: () => void) => scope.subscribe(cb), [scope]);
-  const getSnapshot = React.useCallback(() => scope.getSnapshot(), [scope]);
+  const subscribe = React.useCallback(
+    (cb: () => void) => (scope && typeof scope.subscribe === "function" ? scope.subscribe(cb) : () => {}),
+    [scope]
+  );
+  const getSnapshot = React.useCallback(
+    () => (scope && typeof scope.getSnapshot === "function" ? scope.getSnapshot() : { user: {}, mode: "unknown" }),
+    [scope]
+  );
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
