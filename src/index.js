@@ -28,8 +28,8 @@ export const Config = z.object({
   enabled: z.boolean().default(true),
   /** Override the SQLite path. Default: $DSH_HOME/plugin-data/dsh-xiaofei-memory/memory.sqlite. */
   dbPath: z.string().required(false),
-  /** Independent extraction model name (PRD 4.1); requires useLlmExtraction. */
-  extractionModel: z.string().default("deepseek-chat"),
+  /** Independent extraction model name (PRD 4.1); requires useLlmExtraction. Volatile = editable in the console. */
+  extractionModel: z.string().default("deepseek-chat").volatile(),
   /** Whether to use the LLM-backed extractor (default heuristic keeps it dependency-free). */
   useLlmExtraction: z.boolean().default(false),
   /** Damp factor applied on correction (PRD 4.3). */
@@ -38,8 +38,8 @@ export const Config = z.object({
   timeDecayFactor: z.number().default(0.01),
   /** 1-hop graph diffusion on/off (PRD 4.2). */
   enableGraphRecall: z.boolean().default(true),
-  /** Nightly sleep hour, 0-23 (PRD 4.3). */
-  sleepTimeHour: z.number().default(3),
+  /** Nightly sleep hour, 0-23 (PRD 4.3). Volatile = editable in the console. */
+  sleepTimeHour: z.number().default(3).volatile(),
   /** Max tokens for a single recall injection (PRD 4.2). */
   maxRecallTokens: z.number().default(1200),
   /** Default role namespace when the session carries none. */
@@ -48,7 +48,7 @@ export const Config = z.object({
   correctionTools: z.array(z.string()).default([]),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
-  /** Role registry for the management console (id, name, description, enabled). */
+  /** Role registry for the management console. Volatile = editable in the console. */
   roles: z.array(z.object({
     id: z.string().required(),
     name: z.string().required(),
@@ -58,7 +58,7 @@ export const Config = z.object({
     { id: "global", name: "全局", description: "跨角色共享的核心记忆", enabled: true },
     { id: "companion", name: "小肥鱼", description: "陪伴与情绪价值", enabled: true },
     { id: "work-assistant", name: "开发A", description: "任务流转与多角色协作", enabled: true },
-  ]),
+  ]).volatile(),
 });
 
 const LAST_SLEEP_KEY = "meta.lastSleepAt";
@@ -70,6 +70,14 @@ function defaultDbPath() {
 }
 
 export async function apply(ctx, config) {
+  // Unwrap schemastery `.volatile()` accessors (settings-editable fields) into
+  // plain values so the rest of the engine can read them normally.
+  for (const k of ["roles", "sleepTimeHour", "extractionModel"]) {
+    const v = config[k];
+    if (v && typeof v === "object" && typeof v.get === "function") {
+      try { config[k] = v.get(); } catch { /* keep the accessor if frozen */ }
+    }
+  }
   if (!config.enabled) {
     ctx.logger?.info?.("dsh-xiaofei-memory: disabled by config");
     return;

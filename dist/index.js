@@ -823,8 +823,8 @@ var Config = z.object({
   enabled: z.boolean().default(true),
   /** Override the SQLite path. Default: $DSH_HOME/plugin-data/dsh-xiaofei-memory/memory.sqlite. */
   dbPath: z.string().required(false),
-  /** Independent extraction model name (PRD 4.1); requires useLlmExtraction. */
-  extractionModel: z.string().default("deepseek-chat"),
+  /** Independent extraction model name (PRD 4.1); requires useLlmExtraction. Volatile = editable in the console. */
+  extractionModel: z.string().default("deepseek-chat").volatile(),
   /** Whether to use the LLM-backed extractor (default heuristic keeps it dependency-free). */
   useLlmExtraction: z.boolean().default(false),
   /** Damp factor applied on correction (PRD 4.3). */
@@ -833,8 +833,8 @@ var Config = z.object({
   timeDecayFactor: z.number().default(0.01),
   /** 1-hop graph diffusion on/off (PRD 4.2). */
   enableGraphRecall: z.boolean().default(true),
-  /** Nightly sleep hour, 0-23 (PRD 4.3). */
-  sleepTimeHour: z.number().default(3),
+  /** Nightly sleep hour, 0-23 (PRD 4.3). Volatile = editable in the console. */
+  sleepTimeHour: z.number().default(3).volatile(),
   /** Max tokens for a single recall injection (PRD 4.2). */
   maxRecallTokens: z.number().default(1200),
   /** Default role namespace when the session carries none. */
@@ -843,7 +843,7 @@ var Config = z.object({
   correctionTools: z.array(z.string()).default([]),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
-  /** Role registry for the management console (id, name, description, enabled). */
+  /** Role registry for the management console. Volatile = editable in the console. */
   roles: z.array(z.object({
     id: z.string().required(),
     name: z.string().required(),
@@ -853,7 +853,7 @@ var Config = z.object({
     { id: "global", name: "\u5168\u5C40", description: "\u8DE8\u89D2\u8272\u5171\u4EAB\u7684\u6838\u5FC3\u8BB0\u5FC6", enabled: true },
     { id: "companion", name: "\u5C0F\u80A5\u9C7C", description: "\u966A\u4F34\u4E0E\u60C5\u7EEA\u4EF7\u503C", enabled: true },
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
-  ])
+  ]).volatile()
 });
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
@@ -862,6 +862,15 @@ function defaultDbPath() {
   return join(home, "plugin-data", "dsh-xiaofei-memory", "memory.sqlite");
 }
 async function apply(ctx, config) {
+  for (const k of ["roles", "sleepTimeHour", "extractionModel"]) {
+    const v = config[k];
+    if (v && typeof v === "object" && typeof v.get === "function") {
+      try {
+        config[k] = v.get();
+      } catch {
+      }
+    }
+  }
   if (!config.enabled) {
     ctx.logger?.info?.("dsh-xiaofei-memory: disabled by config");
     return;
