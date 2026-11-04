@@ -7,6 +7,8 @@ import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
 
 import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed } from "./db.js";
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { retrieveForPrompt } from "./retrieval.js";
 import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
@@ -280,6 +282,12 @@ export async function apply(ctx, config) {
     previewRecall: (query, roleId) => previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens }),
     triggerNightlySleep: () => core.triggerNightlySleep(),
     listSoulMemories: () => listSoulMemories(db),
+    // Diagnostic probe: the Web client calls this to prove it is running and
+    // which mount path it took. Writes a line to a temp log.
+    probe(msg) {
+      try { appendFileSync(join(tmpdir(), "dshxf-probe.log"), `${new Date().toISOString()} ${msg}\n`); } catch { /* ignore */ }
+      return true;
+    },
   });
 
   // --- Tools: expose retrieve + addFact ---------------------------------

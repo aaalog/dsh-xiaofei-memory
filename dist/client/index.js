@@ -72,6 +72,7 @@ function apply(ctx) {
     injectCss();
   } catch {
   }
+  probe("apply");
   let disposeHeader = null;
   const disposeSettings = mountSettings(ctx);
   try {
@@ -103,6 +104,7 @@ function apply(ctx) {
 }
 function mountSettings(ctx) {
   const mountWithScope = (scope) => {
+    probe("mountWithScope scope=" + (scope ? "yes" : "no"));
     let disposeEntry = null;
     let disposeInjection = null;
     const registerSection = () => {
@@ -110,6 +112,7 @@ function mountSettings(ctx) {
         disposeEntry?.();
       } catch {
       }
+      probe("register settings.section");
       try {
         disposeEntry = ctx.slots.register(
           {
@@ -143,6 +146,7 @@ function mountSettings(ctx) {
   };
   const settingsScope = softService(ctx, "settingsScope");
   if (settingsScope !== void 0 && settingsScope !== null) {
+    probe("settingsScope present");
     return mountWithScope(typeof settingsScope.bind === "function" ? settingsScope.bind({ namespace: NS }) : settingsScope);
   }
   let disposer = null;
@@ -151,10 +155,12 @@ function mountSettings(ctx) {
     attempts += 1;
     const forms = softService(ctx, "configForms");
     if (forms !== void 0 && typeof forms.get === "function") {
+      probe("configForms ready at attempt " + attempts);
       clearInterval(timer);
       disposer = mountWithScope(forms.get(NS));
     } else if (attempts >= 75) {
       clearInterval(timer);
+      probe("configForms NOT ready after 30s");
       console.info("[dsh-xiaofei-memory] configForms not ready; settings section unregistered");
     }
   }, 400);
@@ -175,6 +181,16 @@ function softService(ctx, name) {
     return ctx[name];
   } catch {
     return void 0;
+  }
+}
+function probe(msg) {
+  try {
+    const ctx = window.__ctx__;
+    if (!ctx) return;
+    const remote = ctx.remote || (typeof ctx.get === "function" ? ctx.get("remote") : void 0);
+    const svc = remote && remote.memoryConsole;
+    if (svc && typeof svc.probe === "function") svc.probe(msg);
+  } catch {
   }
 }
 function HeaderButton() {

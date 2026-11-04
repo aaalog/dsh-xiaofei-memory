@@ -459,6 +459,10 @@ function buildFtsQuery(text) {
   return Array.from(terms).slice(0, 12).map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 }
 
+// src/index.js
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+
 // src/retrieval.js
 var LAYER_PRIORITY = { core: 0, weekly: 1, recent: 2, diffusion: 3 };
 var INTROSPECTION_RE = /(我是谁|你是谁|我的角色|我的身份|我是什么|我是干什么|我是什么人|我的存在|我的使命|我为什么在这里|我是做什么)/;
@@ -1039,7 +1043,17 @@ async function apply(ctx, config) {
     searchMemory: (query, roleId) => searchMemory(db, { query, roleId, decay: loadEvolution(db).timeDecay }),
     previewRecall: (query, roleId) => previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens }),
     triggerNightlySleep: () => core.triggerNightlySleep(),
-    listSoulMemories: () => listSoulMemories(db)
+    listSoulMemories: () => listSoulMemories(db),
+    // Diagnostic probe: the Web client calls this to prove it is running and
+    // which mount path it took. Writes a line to a temp log.
+    probe(msg) {
+      try {
+        appendFileSync(join(tmpdir(), "dshxf-probe.log"), `${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
+`);
+      } catch {
+      }
+      return true;
+    }
   });
   const disposeRetrieve = ctx.tools.register({
     name: "memory_core_retrieve",

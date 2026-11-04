@@ -32,6 +32,7 @@ function hostService(ctx: any, name: string): any {
 export function apply(ctx: any): () => void {
   (window as any).__ctx__ = ctx;
   try { injectCss(); } catch { /* ignore */ }
+  probe("apply");
   let disposeHeader: (() => void) | null = null;
   // Primary mount: a Settings page section. Mirror meow-memory: obtain a bound
   // settings scope, or poll the `configForms` service until it is ready.
@@ -65,10 +66,12 @@ export function apply(ctx: any): () => void {
  */
 function mountSettings(ctx: any): () => void {
   const mountWithScope = (scope: any) => {
+    probe("mountWithScope scope=" + (scope ? "yes" : "no"));
     let disposeEntry: (() => void) | null = null;
     let disposeInjection: (() => void) | null = null;
     const registerSection = () => {
       try { disposeEntry?.(); } catch { /* ignore */ }
+      probe("register settings.section");
       try {
         disposeEntry = ctx.slots.register(
           {
@@ -94,6 +97,7 @@ function mountSettings(ctx: any): () => void {
 
   const settingsScope = softService(ctx, "settingsScope");
   if (settingsScope !== undefined && settingsScope !== null) {
+    probe("settingsScope present");
     return mountWithScope(typeof settingsScope.bind === "function" ? settingsScope.bind({ namespace: NS }) : settingsScope);
   }
 
@@ -103,10 +107,12 @@ function mountSettings(ctx: any): () => void {
     attempts += 1;
     const forms = softService(ctx, "configForms");
     if (forms !== undefined && typeof forms.get === "function") {
+      probe("configForms ready at attempt " + attempts);
       clearInterval(timer);
       disposer = mountWithScope(forms.get(NS));
     } else if (attempts >= 75) {
       clearInterval(timer);
+      probe("configForms NOT ready after 30s");
       console.info("[dsh-xiaofei-memory] configForms not ready; settings section unregistered");
     }
   }, 400);
@@ -119,6 +125,17 @@ function mountSettings(ctx: any): () => void {
 function softService(ctx: any, name: string): any {
   try { if (typeof ctx.get === "function") return ctx.get(name); } catch { /* ignore */ }
   try { return ctx[name]; } catch { return undefined; }
+}
+
+/** Fire-and-forget diagnostic to the host (writes dshxf-probe.log). */
+function probe(msg: string): void {
+  try {
+    const ctx = (window as any).__ctx__;
+    if (!ctx) return;
+    const remote = ctx.remote || (typeof ctx.get === "function" ? ctx.get("remote") : undefined);
+    const svc = remote && remote.memoryConsole;
+    if (svc && typeof svc.probe === "function") svc.probe(msg);
+  } catch { /* ignore */ }
 }
 
 /** Header button that toggles a floating console overlay. */
