@@ -44,7 +44,7 @@ module.exports = __toCommonJS(index_exports);
 var React = __toESM(require("react"), 1);
 
 // src/client/styles.css
-var styles_default = '/* dsh-xiaofei-memory management console styles */\n.dshxf-console {\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n  padding: 4px 2px;\n  font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);\n  color: var(--dsh-fg, #1f2328);\n}\n.dshxf-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--dsh-border, #e1e4e8); }\n.dshxf-tab {\n  appearance: none; border: 1px solid transparent; background: transparent;\n  padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer;\n  font: inherit; font-size: 13px; color: var(--dsh-fg, #57606a);\n}\n.dshxf-tab.is-active { background: var(--dsh-bg-2, #f6f8fa); border-color: var(--dsh-border, #e1e4e8); border-bottom-color: var(--dsh-bg-2, #f6f8fa); color: var(--dsh-fg, #1f2328); font-weight: 600; }\n.dshxf-panel { display: flex; flex-direction: column; gap: 10px; }\n.dshxf-h { margin: 0 0 4px; font-size: 15px; font-weight: 600; }\n.dshxf-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }\n.dshxf-in {\n  padding: 6px 8px; border: 1px solid var(--dsh-border, #d0d7de); border-radius: 6px;\n  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328); font: inherit; font-size: 13px;\n}\n.dshxf-grow { flex: 1; min-width: 90px; }\n.dshxf-check { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }\n.dshxf-btn {\n  appearance: none; padding: 6px 12px; border: 1px solid var(--dsh-border, #d0d7de);\n  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;\n  font: inherit; font-size: 13px; color: var(--dsh-fg, #1f2328);\n}\n.dshxf-btn:hover { background: var(--dsh-bg-3, #eaeef2); }\n.dshxf-btn.dshxf-primary { background: #2da44e; border-color: #2da44e; color: #fff; }\n.dshxf-btn.dshxf-primary:hover { background: #2c974b; }\n.dshxf-btn.dshxf-danger { background: #cf222e; border-color: #cf222e; color: #fff; }\n.dshxf-btn.dshxf-danger:hover { background: #b62324; }\n.dshxf-btn.dshxf-lg { padding: 8px 18px; font-weight: 600; }\n.dshxf-btn:disabled { opacity: 0.6; cursor: not-allowed; }\n.dshxf-msg { font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-note { font-size: 12px; color: var(--dsh-fg, #6e7781); background: var(--dsh-bg-2, #f6f8fa); padding: 8px 10px; border-radius: 6px; }\n.dshxf-stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-stats b { color: var(--dsh-fg, #1f2328); }\n.dshxf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }\n.dshxf-mem { border: 1px solid var(--dsh-border, #e1e4e8); border-radius: 8px; padding: 8px 10px; background: var(--dsh-bg, #fff); }\n.dshxf-mem-meta { display: flex; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }\n.dshxf-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--dsh-bg-3, #eaeef2); color: var(--dsh-fg, #57606a); }\n.dshxf-tag.dshxf-str { background: #ddf4ff; color: #0969da; }\n.dshxf-mem-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }\n';
+var styles_default = '/* dsh-xiaofei-memory management console styles */\n.dshxf-console {\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n  padding: 4px 2px;\n  font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);\n  color: var(--dsh-fg, #1f2328);\n}\n.dshxf-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--dsh-border, #e1e4e8); }\n.dshxf-tab {\n  appearance: none; border: 1px solid transparent; background: transparent;\n  padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer;\n  font: inherit; font-size: 13px; color: var(--dsh-fg, #57606a);\n}\n.dshxf-tab.is-active { background: var(--dsh-bg-2, #f6f8fa); border-color: var(--dsh-border, #e1e4e8); border-bottom-color: var(--dsh-bg-2, #f6f8fa); color: var(--dsh-fg, #1f2328); font-weight: 600; }\n.dshxf-panel { display: flex; flex-direction: column; gap: 10px; }\n.dshxf-h { margin: 0 0 4px; font-size: 15px; font-weight: 600; }\n.dshxf-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }\n.dshxf-in {\n  padding: 6px 8px; border: 1px solid var(--dsh-border, #d0d7de); border-radius: 6px;\n  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328); font: inherit; font-size: 13px;\n}\n.dshxf-grow { flex: 1; min-width: 90px; }\n.dshxf-check { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }\n.dshxf-btn {\n  appearance: none; padding: 6px 12px; border: 1px solid var(--dsh-border, #d0d7de);\n  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;\n  font: inherit; font-size: 13px; color: var(--dsh-fg, #1f2328);\n}\n.dshxf-btn:hover { background: var(--dsh-bg-3, #eaeef2); }\n.dshxf-btn.dshxf-primary { background: #2da44e; border-color: #2da44e; color: #fff; }\n.dshxf-btn.dshxf-primary:hover { background: #2c974b; }\n.dshxf-btn.dshxf-danger { background: #cf222e; border-color: #cf222e; color: #fff; }\n.dshxf-btn.dshxf-danger:hover { background: #b62324; }\n.dshxf-btn.dshxf-lg { padding: 8px 18px; font-weight: 600; }\n.dshxf-btn:disabled { opacity: 0.6; cursor: not-allowed; }\n.dshxf-msg { font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-note { font-size: 12px; color: var(--dsh-fg, #6e7781); background: var(--dsh-bg-2, #f6f8fa); padding: 8px 10px; border-radius: 6px; }\n.dshxf-stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-stats b { color: var(--dsh-fg, #1f2328); }\n.dshxf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }\n.dshxf-mem { border: 1px solid var(--dsh-border, #e1e4e8); border-radius: 8px; padding: 8px 10px; background: var(--dsh-bg, #fff); }\n.dshxf-mem-meta { display: flex; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }\n.dshxf-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--dsh-bg-3, #eaeef2); color: var(--dsh-fg, #57606a); }\n.dshxf-tag.dshxf-str { background: #ddf4ff; color: #0969da; }\n.dshxf-mem-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }\n\n/* \u2500\u2500 header trigger + floating overlay console \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */\n.dshxf-trigger {\n  appearance: none; padding: 4px 10px; border: 1px solid var(--dsh-border, #d0d7de);\n  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;\n  font: inherit; font-size: 12px; color: var(--dsh-fg, #1f2328);\n}\n.dshxf-trigger:hover { background: var(--dsh-bg-3, #eaeef2); }\n.dshxf-overlay {\n  position: fixed; inset: 0; z-index: 100000; display: flex;\n  align-items: center; justify-content: center;\n  background: rgba(0, 0, 0, 0.45);\n}\n.dshxf-modal {\n  position: relative; width: min(920px, 92vw); max-height: 86vh; overflow: auto;\n  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328);\n  border-radius: 12px; padding: 18px 20px;\n  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);\n}\n.dshxf-close {\n  position: absolute; top: 8px; right: 12px; border: none; background: transparent;\n  font-size: 22px; line-height: 1; cursor: pointer; color: var(--dsh-fg, #57606a);\n}\n';
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
@@ -74,6 +74,7 @@ function apply(ctx) {
   }
   let disposeEntry = null;
   let disposeInjection = null;
+  let disposeHeader = null;
   const registerSection = () => {
     try {
       disposeEntry?.();
@@ -99,7 +100,27 @@ function apply(ctx) {
   } catch (e) {
     console.warn("[dsh-xiaofei-memory] settings slot inject failed", e);
   }
+  try {
+    disposeHeader = ctx.slots.inject("conversation.session.header.actions", () => {
+      try {
+        return ctx.slots.register(
+          { name: "conversation.session.header.actions", id: NS, order: 200 },
+          HeaderButton
+        );
+      } catch (e) {
+        console.warn("[dsh-xiaofei-memory] header slot unavailable:", e);
+        return () => {
+        };
+      }
+    });
+  } catch (e) {
+    console.warn("[dsh-xiaofei-memory] header slot inject failed", e);
+  }
   return () => {
+    try {
+      disposeHeader?.();
+    } catch {
+    }
     try {
       disposeInjection?.();
     } catch {
@@ -109,6 +130,39 @@ function apply(ctx) {
     } catch {
     }
   };
+}
+function HeaderButton() {
+  const [open, setOpen] = React.useState(false);
+  const ctx = window.__ctx__;
+  const scope = ctx ? getScope(ctx) : void 0;
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement(
+      "button",
+      {
+        className: "dshxf-trigger",
+        title: "\u5C0F\u80A5\u9C7C\u8BB0\u5FC6\u5F15\u64CE",
+        onClick: () => setOpen((v) => !v)
+      },
+      "\u8BB0\u5FC6\u5F15\u64CE"
+    ),
+    open ? React.createElement(
+      "div",
+      {
+        className: "dshxf-overlay",
+        onClick: (e) => {
+          if (e.target === e.currentTarget) setOpen(false);
+        }
+      },
+      React.createElement(
+        "div",
+        { className: "dshxf-modal" },
+        React.createElement("button", { className: "dshxf-close", onClick: () => setOpen(false) }, "\xD7"),
+        React.createElement(ConsolePage, { scope })
+      )
+    ) : null
+  );
 }
 function getScope(ctx) {
   try {

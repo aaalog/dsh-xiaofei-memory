@@ -46,3 +46,26 @@
 .dshxf-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--dsh-bg-3, #eaeef2); color: var(--dsh-fg, #57606a); }
 .dshxf-tag.dshxf-str { background: #ddf4ff; color: #0969da; }
 .dshxf-mem-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+
+/* ── header trigger + floating overlay console ─────────────────────────── */
+.dshxf-trigger {
+  appearance: none; padding: 4px 10px; border: 1px solid var(--dsh-border, #d0d7de);
+  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--dsh-fg, #1f2328);
+}
+.dshxf-trigger:hover { background: var(--dsh-bg-3, #eaeef2); }
+.dshxf-overlay {
+  position: fixed; inset: 0; z-index: 100000; display: flex;
+  align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.dshxf-modal {
+  position: relative; width: min(920px, 92vw); max-height: 86vh; overflow: auto;
+  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328);
+  border-radius: 12px; padding: 18px 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.dshxf-close {
+  position: absolute; top: 8px; right: 12px; border: none; background: transparent;
+  font-size: 22px; line-height: 1; cursor: pointer; color: var(--dsh-fg, #57606a);
+}

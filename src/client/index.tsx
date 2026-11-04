@@ -34,6 +34,8 @@ export function apply(ctx: any): () => void {
   try { injectCss(); } catch { /* ignore */ }
   let disposeEntry: (() => void) | null = null;
   let disposeInjection: (() => void) | null = null;
+  let disposeHeader: (() => void) | null = null;
+  // Primary mount: a Settings page section.
   const registerSection = () => {
     try { disposeEntry?.(); } catch { /* ignore */ }
     try {
@@ -49,19 +51,71 @@ export function apply(ctx: any): () => void {
       );
     } catch (e) {
       // The settings.section slot may not be declared in this profile (the
-      // settings-UI plugin can be disabled). Never crash DSH boot; the console
+      // settings-UI shell can be absent). Never crash DSH boot; the section
       // mounts automatically once the slot is declared.
       console.warn("[dsh-xiaofei-memory] settings.section unavailable:", e);
     }
   };
   try { disposeInjection = ctx.slots.inject("settings.section", registerSection); }
   catch (e) { console.warn("[dsh-xiaofei-memory] settings slot inject failed", e); }
-  // Do NOT call registerSection() directly: an undeclared slot throws and would
-  // abort the whole web boot. `inject` fires when/if the slot is declared.
+
+  // Guaranteed-access fallback: a header button in the conversation view that
+  // opens the console as a floating overlay. This slot is used by other
+  // installed plugins, so it exists even when the settings shell does not.
+  try {
+    disposeHeader = ctx.slots.inject("conversation.session.header.actions", () => {
+      try {
+        return ctx.slots.register(
+          { name: "conversation.session.header.actions", id: NS, order: 200 },
+          HeaderButton
+        );
+      } catch (e) {
+        console.warn("[dsh-xiaofei-memory] header slot unavailable:", e);
+        return () => {};
+      }
+    });
+  } catch (e) { console.warn("[dsh-xiaofei-memory] header slot inject failed", e); }
+
   return () => {
+    try { disposeHeader?.(); } catch { /* ignore */ }
     try { disposeInjection?.(); } catch { /* ignore */ }
     try { disposeEntry?.(); } catch { /* ignore */ }
   };
+}
+
+/** Header button that toggles a floating console overlay. */
+function HeaderButton() {
+  const [open, setOpen] = React.useState(false);
+  const ctx = (window as any).__ctx__;
+  const scope = ctx ? getScope(ctx) : undefined;
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement(
+      "button",
+      {
+        className: "dshxf-trigger",
+        title: "小肥鱼记忆引擎",
+        onClick: () => setOpen((v) => !v),
+      },
+      "记忆引擎"
+    ),
+    open
+      ? React.createElement(
+          "div",
+          {
+            className: "dshxf-overlay",
+            onClick: (e: any) => { if (e.target === e.currentTarget) setOpen(false); },
+          },
+          React.createElement(
+            "div",
+            { className: "dshxf-modal" },
+            React.createElement("button", { className: "dshxf-close", onClick: () => setOpen(false) }, "×"),
+            React.createElement(ConsolePage, { scope })
+          )
+        )
+      : null
+  );
 }
 
 function getScope(ctx: any): any {
