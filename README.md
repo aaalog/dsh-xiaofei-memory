@@ -78,23 +78,26 @@
 
 ## 管理控制台（Web UI）
 
-插件内置一个 4-Tab 可视化控制台，作为 DSH 设置面板挂载到 `settings.section` 槽位（Browser 半 `src/client/index.tsx` → 产物 `lib/client.js`）：
+插件内置一个 4-Tab 可视化控制台，作为 DSH 设置面板挂载到 `settings.section` 槽位（Browser 半 `src/client/index.tsx` → 产物 `dist/client/index.js`）：
 
 - **角色与路由**：读写 `Config.roles`（id/name/description/enabled），增删改。
 - **记忆图谱**：按 `role_id` 过滤 + 关键词检索（FTS5 trigram + 大二元相似度），展示 strength/layer/score 与分层统计。
 - **夜间睡眠**：设置每日执行小时 + 红色【立即执行夜间代谢】按钮（调用 `triggerNightlySleep`）。
 - **底层系统**：配置 `extractionModel`，展示 10 条灵魂初始记忆。
 
-**Host 半**（`lib/index.js` + `lib/console.js`）：管理 API 经 `ctx.settings` 注册设置面板；数据操作经 `memoryConsole` 服务桥接到前端。
+**Host 半**（`src/index.js` + `src/console.js`）：管理 API 经 `ctx.settings` 注册设置面板；数据操作经 `memoryConsole` 服务桥接到前端。
 
-### 编译前端
+### 构建（生产）
 
 ```bash
-npm install            # 安装构建依赖（首次）
-npm run build:client   # 构建 Browser 半产物 lib/client.js（node build-client.mjs）
+npm install            # 安装构建依赖（首次，esbuild）
+npm run clean          # 清理 dist/
+npm run build          # 生成 dist/index.js（后端）+ dist/client/index.js（前端）
 ```
 
-产物 `lib/client.js` 通过 `window.__ModuleLoader__.load({ id: "dsh-xiaofei-memory", factory })` 注册；`package.json` 已声明 `dsh.client.platform: "web"` 与 `exports["./client"]`。
+构建用 esbuild：后端 `src/index.js` → `dist/index.js`（`node:*`、`@deepseek-ai/*`、`react` 置为 external）；前端 `src/client/index.tsx` → `dist/client/index.js`（`react` external，CSS 内联为 `<style>` 文本）。
+
+产物 `dist/client/index.js` 通过 `window.__ModuleLoader__.load({ id: "dsh-xiaofei-memory", factory })` 注册；`package.json` 声明 `main: dist/index.js`、`dsh.client.platform: "web"`、`exports["./client"]`、`files: ["dist", ...]`。
 
 ### 在 DSH 中看到控制台
 
@@ -106,7 +109,7 @@ npm run build:client   # 构建 Browser 半产物 lib/client.js（node build-cli
 
 ## 验收
 
-运行 `npm test`（`test-engine.mjs` 21 项 + `test-load.mjs` 20 项 + `test-console.mjs` 10 项 + 前端 `build-client.mjs` + `test-client.mjs` 7 项 = 58 项断言）验证。已覆盖：建表+10 初始记忆、角色隔离、内省检索召回"赛博战友/陪伴"、单次检索注入 <50ms、夜间蒸馏归档不膨胀、进化参数持久化、管理 API 数据操作、前端 bundle 装载与 settings.section 注册。
+运行 `npm test`（`test-engine.mjs` 21 项 + `test-load.mjs` 20 项 + `test-console.mjs` 10 项 + `test-client.mjs` 7 项 + `test-dist.mjs` 10 项 = 68 项断言）验证。已覆盖：建表+10 初始记忆、角色隔离、内省检索召回"赛博战友/陪伴"、单次检索注入 <50ms、夜间蒸馏归档不膨胀、进化参数持久化、管理 API 数据操作、前端 bundle 装载与 settings.section 注册、生产 dist 构建装载与 external 正确。
 
 ```bash
 node test-engine.mjs && node test-load.mjs

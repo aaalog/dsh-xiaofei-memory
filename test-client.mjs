@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const code = fs.readFileSync(path.join(root, "lib", "client.js"), "utf8");
+const code = fs.readFileSync(path.join(root, "dist", "client", "index.js"), "utf8");
 
 const failures = [];
 let passed = 0;

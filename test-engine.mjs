@@ -1,10 +1,10 @@
 // test-engine.mjs — verify dsh-xiaofei-memory engine modules against PRD acceptance.
-import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet } from "./lib/db.js";
-import { retrieveForPrompt } from "./lib/retrieval.js";
-import { CaptureTracker } from "./lib/capture.js";
-import { FeedbackManager } from "./lib/feedback.js";
-import { runNightlySleep } from "./lib/sleep.js";
-import { loadEvolution, runEvolution } from "./lib/evolution.js";
+import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet } from "./src/db.js";
+import { retrieveForPrompt } from "./src/retrieval.js";
+import { CaptureTracker } from "./src/capture.js";
+import { FeedbackManager } from "./src/feedback.js";
+import { runNightlySleep } from "./src/sleep.js";
+import { loadEvolution, runEvolution } from "./src/evolution.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rmSync } from "node:fs";

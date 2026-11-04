@@ -1,7 +1,7 @@
 // test-console.mjs — verify the management console data operations.
-import { openMemoryDb } from "./lib/db.js";
-import { addMemory } from "./lib/db.js";
-import { getMemoryStats, searchMemory, triggerNightlySleep, listSoulMemories } from "./lib/console.js";
+import { openMemoryDb } from "./src/db.js";
+import { addMemory } from "./src/db.js";
+import { getMemoryStats, searchMemory, triggerNightlySleep, listSoulMemories } from "./src/console.js";
 
 const failures = [];
 let passed = 0;

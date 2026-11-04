@@ -12,15 +12,15 @@
     "fts5"
   ],
   "type": "module",
-  "main": "lib/index.js",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./lib/index.js",
-    "./client": "./lib/client.js",
+    ".": "./dist/index.js",
+    "./client": "./dist/client/index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/**/*.js",
+    "dist",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -52,9 +52,9 @@
     "esbuild": "^0.28.2"
   },
   "scripts": {
-    "build": "node build-client.mjs",
-    "build:client": "node build-client.mjs",
-    "build:host": "node -e \"console.log('host is plain ESM; no build needed')\"",
-    "test": "node test-engine.mjs && node test-load.mjs && node test-console.mjs && node build-client.mjs && node test-client.mjs"
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "node build.mjs",
+    "build:client": "node build.mjs",
+    "test": "node test-engine.mjs && node test-load.mjs && node test-console.mjs && node build.mjs && node test-client.mjs && node test-dist.mjs"
   }
 }

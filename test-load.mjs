@@ -9,7 +9,7 @@ function check(label, cond, extra = "") {
   else { fail++; console.log(`  FAIL  ${label} ${extra}`); }
 }
 
-const mod = await import("./lib/index.js");
+const mod = await import("./src/index.js");
 check("exports name", mod.name === "dsh-xiaofei-memory");
 check("exports inject", Array.isArray(mod.inject));
 check("exports Config (schemastery callable)", typeof mod.Config === "function");
