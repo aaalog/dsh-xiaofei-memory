@@ -17,6 +17,7 @@ import { runNightlySleep } from "./sleep.js";
 import { loadEvolution, runEvolution } from "./evolution.js";
 import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories, previewCoreMemory, getMemoryGraph } from "./console.js";
 import { registerCoreMemory } from "./core-memory.js";
+import { resolveMemoryRef, shortMemoryId } from "./memory-index.js";
 
 export const name = "dsh-xiaofei-memory";
 
@@ -56,6 +57,12 @@ export const Config = z.object({
   coreMemoryMaxItemChars: z.number().default(300),
   /** Minimum strength for a memory to be promoted to always-on. */
   coreMemoryMinStrength: z.number().default(1.0),
+  /** Second tier: a compact catalogue of memories that did not fit in full. */
+  enableMemoryIndex: z.boolean().default(true),
+  /** Token budget for the catalogue lines. */
+  memoryIndexMaxTokens: z.number().default(200),
+  /** Maximum catalogue entries. */
+  memoryIndexLimit: z.number().default(40),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
   /** Role registry for the management console. Volatile = editable in the console. */
@@ -570,12 +577,62 @@ export async function apply(ctx, config) {
     },
   });
 
+  // Expand one catalogue entry to its full text. This is the other half of
+  // progressive disclosure: the always-on block carries the catalogue, this
+  // tool fetches the body only when the model decides it needs it.
+  const disposeRead = ctx.tools.register({
+    name: "memory_core_read",
+    description: "按 id 读取一条长期记忆的完整内容（id 见系统提示词中的「记忆索引」）。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "记忆 id，可传索引里的短 id 或完整 id。" },
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          layer: { type: "string" },
+          roleId: { type: "string" },
+          strength: { type: "number" },
+          content: { type: "string" },
+        },
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok
+          ? `[${v.layer} · ${v.roleId} · s=${Number(v.strength).toFixed(2)}] ${v.content}`
+          : "未找到该记忆（可能已归档或 id 有歧义）。",
+      }],
+    },
+    async execute(args) {
+      const row = resolveMemoryRef(db, args?.id);
+      if (!row) return { ok: false };
+      return {
+        ok: true,
+        id: String(row.id),
+        layer: String(row.layer),
+        roleId: String(row.role_id),
+        strength: Number(row.strength) || 0,
+        content: String(row.content ?? ""),
+      };
+    },
+  });
+
   // --- Cleanup -----------------------------------------------------------
   ctx.effect(() => () => {
     if (sleepTimer) clearTimeout(sleepTimer);
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
     if (typeof disposeAddFact === "function") disposeAddFact();
+    if (typeof disposeRead === "function") disposeRead();
     // Unregister per-agent prompt sections before the database goes away, so a
     // late render can never touch a closed handle.
     try { void disposeCoreMemory?.(); } catch { /* already disposed */ }

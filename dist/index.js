@@ -628,6 +628,26 @@ function renderEntry(m) {
 // src/capture.js
 var IMPORTANCE_CORE_RE = /(记住|永远|务必|重要|核心|关键|红线|必须|一定|教训|原则|准则|决定)/;
 var IMPORTANCE_WEEKLY_RE = /(计划|项目|目标|方案|架构|设计|开发|部署|长期|后续|接下来|打算)/;
+var NON_CAPTURABLE_PREFIXES = [
+  "[SCHEDULE REMINDER]",
+  "[meow-memory-reflect]",
+  "[memory-recall]",
+  "<memory-recall>"
+];
+var OWN_SOURCE_KINDS = /* @__PURE__ */ new Set(["runtime-xiaofei-memory"]);
+function isNonCapturable(source, text) {
+  const kind = source?.kind;
+  if (typeof kind === "string") {
+    if (OWN_SOURCE_KINDS.has(kind)) return true;
+    if (kind.startsWith("memory")) return true;
+  }
+  const head = String(text ?? "").trimStart();
+  for (const prefix of NON_CAPTURABLE_PREFIXES) {
+    if (head.startsWith(prefix)) return true;
+  }
+  if (head.includes("<memory-recall>")) return true;
+  return false;
+}
 var CaptureTracker = class {
   constructor({ store, roleOf, logger, extractor }) {
     this.store = store;
@@ -651,7 +671,7 @@ var CaptureTracker = class {
       const text = (data?.content ?? []).filter((b) => b?.type === "text" && typeof b?.text === "string").map((b) => b.text).join("\n");
       if (!text.trim()) return false;
       const source = data?.source;
-      if (source?.kind && String(source.kind).startsWith("memory")) return false;
+      if (isNonCapturable(source, text)) return false;
       if (t === "user/message") state.user.push(text);
       else state.assistant.push(text);
       return false;
@@ -896,10 +916,106 @@ function runEvolution(db, stats = {}) {
   return { ...current, changed };
 }
 
+// src/memory-index.js
+var DEFAULT_INDEX_HEADER = "## \u8BB0\u5FC6\u7D22\u5F15\n\u4EE5\u4E0B\u8BB0\u5FC6\u672A\u5C55\u5F00\u3002\u9700\u8981\u5168\u6587\u65F6\u8C03\u7528 memory_core_read(id)\u3002";
+var BUDGET_SAFETY_TOKENS = 6;
+function shorten(text, chars) {
+  const flat = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  const arr = Array.from(flat);
+  if (arr.length <= chars) return flat;
+  return arr.slice(0, chars).join("") + "\u2026";
+}
+function shortMemoryId(id) {
+  const s = String(id ?? "");
+  const lastUnderscore = s.lastIndexOf("_");
+  if (lastUnderscore > 0 && s.length - lastUnderscore - 1 >= 4) return s.slice(lastUnderscore + 1);
+  return s;
+}
+function buildMemoryIndex(db, {
+  roleIds = ["global"],
+  excludeIds = [],
+  maxTokens = 200,
+  titleChars = 26,
+  limit = 40,
+  layers = ["core", "weekly"]
+} = {}) {
+  if (!db) return [];
+  const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : ["global"];
+  const layerList = Array.isArray(layers) && layers.length > 0 ? layers : ["core", "weekly"];
+  const rolePh = roles.map(() => "?").join(",");
+  const layerPh = layerList.map(() => "?").join(",");
+  let rows;
+  try {
+    rows = db.prepare(
+      `SELECT id, layer, content, strength, created_at FROM memories
+       WHERE status = 'active'
+         AND role_id IN (${rolePh})
+         AND layer IN (${layerPh})
+       ORDER BY strength DESC, created_at DESC, id ASC
+       LIMIT ?`
+    ).all(...roles, ...layerList, Math.max(1, Math.min(200, Number(limit) || 40)));
+  } catch {
+    return [];
+  }
+  const skip = new Set((Array.isArray(excludeIds) ? excludeIds : []).map(String));
+  const budget = Math.max(0, (Number(maxTokens) || 0) - BUDGET_SAFETY_TOKENS);
+  const out = [];
+  let used = 0;
+  const cap = Math.max(8, Number(titleChars) || 26);
+  for (const r of rows) {
+    if (skip.has(String(r.id))) continue;
+    const raw = typeof r.content === "string" ? r.content.trim() : "";
+    if (!raw) continue;
+    if (raw.includes("<memory-recall>")) continue;
+    const line = `- [${r.layer}] ${shortMemoryId(r.id)} ${shorten(raw, cap)}`;
+    const cost = tokenEstimate(line);
+    if (cost <= 0) continue;
+    if (used + cost > budget) break;
+    out.push({
+      id: String(r.id),
+      short: shortMemoryId(r.id),
+      layer: String(r.layer),
+      title: shorten(raw, cap),
+      chars: Array.from(raw).length
+    });
+    used += cost;
+  }
+  return out;
+}
+function renderMemoryIndex(entries, { header = DEFAULT_INDEX_HEADER } = {}) {
+  if (!Array.isArray(entries) || entries.length === 0) return "";
+  const lines = entries.map((e) => `- [${e.layer}] ${e.short} ${e.title}`);
+  return `${header}
+${lines.join("\n")}`;
+}
+function memoryIndexSignature(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return "";
+  return entries.map((e) => `${e.id}:${e.chars}`).join("|");
+}
+function resolveMemoryRef(db, ref) {
+  const want = String(ref ?? "").trim();
+  if (!want || !db) return null;
+  try {
+    const exact = db.prepare("SELECT * FROM memories WHERE id = ? AND status = 'active'").get(want);
+    if (exact) return exact;
+    const rows = db.prepare(
+      "SELECT * FROM memories WHERE status = 'active' AND id LIKE ? LIMIT 3"
+    ).all(`%${want}`);
+    if (rows.length === 1) return rows[0];
+    if (rows.length > 1) {
+      const exactTail = rows.filter((r) => shortMemoryId(r.id) === want);
+      if (exactTail.length === 1) return exactTail[0];
+    }
+  } catch {
+  }
+  return null;
+}
+
 // src/core-memory.js
 var INJECTED_MARKER = "<memory-recall>";
 var DEFAULT_HEADER = "## \u5E38\u9A7B\u8BB0\u5FC6\n\u4EE5\u4E0B\u662F\u65E0\u9700\u68C0\u7D22\u3001\u59CB\u7EC8\u5728\u573A\u7684\u957F\u671F\u8BB0\u5FC6\u3002\u5B83\u4EEC\u662F\u80CC\u666F\u4E8B\u5B9E\uFF0C\u4E0D\u8981\u9010\u6761\u590D\u8FF0\u3002";
-var BUDGET_SAFETY_TOKENS = 8;
+var BUDGET_SAFETY_TOKENS2 = 8;
 function selectCoreMemories(db, {
   roleIds = ["global"],
   maxTokens = 700,
@@ -923,7 +1039,7 @@ function selectCoreMemories(db, {
   } catch {
     return [];
   }
-  const budget = Math.max(0, (Number(maxTokens) || 0) - BUDGET_SAFETY_TOKENS);
+  const budget = Math.max(0, (Number(maxTokens) || 0) - BUDGET_SAFETY_TOKENS2);
   const chosen = [];
   let used = 0;
   for (const row of rows) {
@@ -961,10 +1077,13 @@ var CoreMemoryCache = class {
    * @param {object} [options] - forwarded to renderCoreMemory
    * @returns {string} stable text for this slice
    */
-  update(entries, options) {
-    const signature = coreMemorySignature(entries);
+  update(entries, options = {}) {
+    const indexEntries = Array.isArray(options.indexEntries) ? options.indexEntries : [];
+    const signature = `${coreMemorySignature(entries)}#${memoryIndexSignature(indexEntries)}`;
     if (signature === this.signature) return this.text;
-    const next = renderCoreMemory(entries, options);
+    const body = renderCoreMemory(entries, options);
+    const index = renderMemoryIndex(indexEntries, { header: options.indexHeader });
+    const next = [body, index].filter(Boolean).join("\n\n");
     this.signature = signature;
     this.text = next;
     return next;
@@ -991,7 +1110,13 @@ async function installCoreMemoryForAgent(agent, { db, config, resolveRoleIds, lo
         maxItemChars: config.coreMemoryMaxItemChars,
         minStrength: config.coreMemoryMinStrength
       });
-      return cache.update(entries);
+      const indexEntries = config.enableMemoryIndex === false ? [] : buildMemoryIndex(db, {
+        roleIds,
+        excludeIds: entries.map((e) => e.id),
+        maxTokens: config.memoryIndexMaxTokens,
+        limit: config.memoryIndexLimit
+      });
+      return cache.update(entries, { indexEntries });
     } catch (e) {
       logger?.warn?.(`runtime-xiaofei-memory: core memory render failed: ${e?.message ?? e}`);
       return "";
@@ -1205,14 +1330,25 @@ function getMemoryGraph(db, { roleId = "all", limit = 300, entitiesPerMemory = 6
     }, {})
   };
 }
-function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1 } = {}) {
+function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1, enableIndex = true, indexMaxTokens = 200, indexLimit = 40 } = {}) {
   const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
   const entries = selectCoreMemories(db, { roleIds, maxTokens, maxItemChars, minStrength });
-  const text = renderCoreMemory(entries);
+  const indexEntries = enableIndex === false ? [] : buildMemoryIndex(db, {
+    roleIds,
+    excludeIds: entries.map((e) => e.id),
+    maxTokens: indexMaxTokens,
+    limit: indexLimit
+  });
+  const body = renderCoreMemory(entries);
+  const index = renderMemoryIndex(indexEntries);
+  const text = [body, index].filter(Boolean).join("\n\n");
   return {
     entries,
+    indexEntries,
     text,
     tokens: tokenEstimate(text),
+    bodyTokens: tokenEstimate(body),
+    indexTokens: tokenEstimate(index),
     section: CORE_MEMORY_SECTION_NAME,
     order: CORE_MEMORY_SECTION_ORDER
   };
@@ -1258,6 +1394,12 @@ var Config = z.object({
   coreMemoryMaxItemChars: z.number().default(300),
   /** Minimum strength for a memory to be promoted to always-on. */
   coreMemoryMinStrength: z.number().default(1),
+  /** Second tier: a compact catalogue of memories that did not fit in full. */
+  enableMemoryIndex: z.boolean().default(true),
+  /** Token budget for the catalogue lines. */
+  memoryIndexMaxTokens: z.number().default(200),
+  /** Maximum catalogue entries. */
+  memoryIndexLimit: z.number().default(40),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
   /** Role registry for the management console. Volatile = editable in the console. */
@@ -1272,7 +1414,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261113114247" : "dev";
+var BUILD_STAMP = true ? "20261113231356" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 function defaultDbPath() {
@@ -1757,11 +1899,55 @@ async function apply(ctx, config) {
       return { ok: true, id: res?.id, merged: res?.merged ?? false };
     }
   });
+  const disposeRead = ctx.tools.register({
+    name: "memory_core_read",
+    description: "\u6309 id \u8BFB\u53D6\u4E00\u6761\u957F\u671F\u8BB0\u5FC6\u7684\u5B8C\u6574\u5185\u5BB9\uFF08id \u89C1\u7CFB\u7EDF\u63D0\u793A\u8BCD\u4E2D\u7684\u300C\u8BB0\u5FC6\u7D22\u5F15\u300D\uFF09\u3002",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "\u8BB0\u5FC6 id\uFF0C\u53EF\u4F20\u7D22\u5F15\u91CC\u7684\u77ED id \u6216\u5B8C\u6574 id\u3002" }
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          layer: { type: "string" },
+          roleId: { type: "string" },
+          strength: { type: "number" },
+          content: { type: "string" }
+        }
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok ? `[${v.layer} \xB7 ${v.roleId} \xB7 s=${Number(v.strength).toFixed(2)}] ${v.content}` : "\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\uFF08\u53EF\u80FD\u5DF2\u5F52\u6863\u6216 id \u6709\u6B67\u4E49\uFF09\u3002"
+      }]
+    },
+    async execute(args) {
+      const row = resolveMemoryRef(db, args?.id);
+      if (!row) return { ok: false };
+      return {
+        ok: true,
+        id: String(row.id),
+        layer: String(row.layer),
+        roleId: String(row.role_id),
+        strength: Number(row.strength) || 0,
+        content: String(row.content ?? "")
+      };
+    }
+  });
   ctx.effect(() => () => {
     if (sleepTimer) clearTimeout(sleepTimer);
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
     if (typeof disposeAddFact === "function") disposeAddFact();
+    if (typeof disposeRead === "function") disposeRead();
     try {
       void disposeCoreMemory?.();
     } catch {

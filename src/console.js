@@ -6,6 +6,7 @@ import { retrieveForPrompt } from "./retrieval.js";
 import { runNightlySleep } from "./sleep.js";
 import { loadEvolution } from "./evolution.js";
 import { selectCoreMemories, renderCoreMemory, CORE_MEMORY_SECTION_NAME, CORE_MEMORY_SECTION_ORDER } from "./core-memory.js";
+import { buildMemoryIndex, renderMemoryIndex } from "./memory-index.js";
 import { tokenEstimate, isMeaningfulEntity, parseJsonList } from "./util.js";
 
 /** Count active memories grouped by layer and by role_id. */
@@ -145,14 +146,27 @@ export function getMemoryGraph(db, { roleId = "all", limit = 300, entitiesPerMem
  * right now?" — it reuses the same selection and rendering the prompt section
  * uses, so the page cannot drift from the real injection.
  */
-export function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1.0 } = {}) {
+export function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1.0, enableIndex = true, indexMaxTokens = 200, indexLimit = 40 } = {}) {
   const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
   const entries = selectCoreMemories(db, { roleIds, maxTokens, maxItemChars, minStrength });
-  const text = renderCoreMemory(entries);
+  const indexEntries = enableIndex === false
+    ? []
+    : buildMemoryIndex(db, {
+        roleIds,
+        excludeIds: entries.map((e) => e.id),
+        maxTokens: indexMaxTokens,
+        limit: indexLimit,
+      });
+  const body = renderCoreMemory(entries);
+  const index = renderMemoryIndex(indexEntries);
+  const text = [body, index].filter(Boolean).join("\n\n");
   return {
     entries,
+    indexEntries,
     text,
     tokens: tokenEstimate(text),
+    bodyTokens: tokenEstimate(body),
+    indexTokens: tokenEstimate(index),
     section: CORE_MEMORY_SECTION_NAME,
     order: CORE_MEMORY_SECTION_ORDER,
   };

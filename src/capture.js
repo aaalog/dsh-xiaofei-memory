@@ -13,6 +13,43 @@ const IMPORTANCE_WEEKLY_RE = /(计划|项目|目标|方案|架构|设计|开发|
  * Per-session capture tracker: accumulates the active turn's user and
  * assistant text, and extracts+stores on turn/end. Async via queueMicrotask.
  */
+/** Prefixes that mark runtime-generated instructions rather than user speech. */
+const NON_CAPTURABLE_PREFIXES = [
+  "[SCHEDULE REMINDER]",
+  "[meow-memory-reflect]",
+  "[memory-recall]",
+  "<memory-recall>",
+];
+
+/** Sources this plugin injects; their kind never starts with "memory". */
+const OWN_SOURCE_KINDS = new Set(["runtime-xiaofei-memory"]);
+
+/**
+ * Whether a message must not be captured as a memory.
+ *
+ * Two distinct leaks showed up in practice:
+ * 1. Our own pre-step injection is tagged `kind: "runtime-xiaofei-memory"`,
+ *    which a naive `startsWith("memory")` check misses — the recall wrapper
+ *    then gets stored and re-injected forever.
+ * 2. Runtime-generated instructions (schedule reminders, reflect tasks) arrive
+ *    as ordinary user text, so they were captured verbatim and then promoted
+ *    to the always-on block.
+ */
+function isNonCapturable(source, text) {
+  const kind = source?.kind;
+  if (typeof kind === "string") {
+    if (OWN_SOURCE_KINDS.has(kind)) return true;
+    if (kind.startsWith("memory")) return true;
+  }
+  const head = String(text ?? "").trimStart();
+  for (const prefix of NON_CAPTURABLE_PREFIXES) {
+    if (head.startsWith(prefix)) return true;
+  }
+  // Any injected recall fragment inside the text, wherever it landed.
+  if (head.includes("<memory-recall>")) return true;
+  return false;
+}
+
 export class CaptureTracker {
   constructor({ store, roleOf, logger, extractor }) {
     this.store = store;
@@ -40,8 +77,7 @@ export class CaptureTracker {
         .join("\n");
       if (!text.trim()) return false;
       const source = data?.source;
-      // Skip our own injected <memory-recall> / notice messages.
-      if (source?.kind && String(source.kind).startsWith("memory")) return false;
+      if (isNonCapturable(source, text)) return false;
       if (t === "user/message") state.user.push(text);
       else state.assistant.push(text);
       return false;

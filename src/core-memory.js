@@ -18,6 +18,7 @@
 //    promoted to always-on, or the poison becomes permanent.
 
 import { tokenEstimate } from "./util.js";
+import { buildMemoryIndex, renderMemoryIndex, memoryIndexSignature } from "./memory-index.js";
 
 /** Marker used by our own pre-step injection; such rows must never go core. */
 const INJECTED_MARKER = "<memory-recall>";
@@ -110,12 +111,18 @@ export class CoreMemoryCache {
    * @param {object} [options] - forwarded to renderCoreMemory
    * @returns {string} stable text for this slice
    */
-  update(entries, options) {
-    const signature = coreMemorySignature(entries);
+  update(entries, options = {}) {
+    const indexEntries = Array.isArray(options.indexEntries) ? options.indexEntries : [];
+    // The signature covers both tiers: a change in the catalogue alone must
+    // invalidate the cached text, or the model would keep seeing a stale list.
+    const signature = `${coreMemorySignature(entries)}#${memoryIndexSignature(indexEntries)}`;
     if (signature === this.signature) return this.text;
-    // The previous text is rendered before the fields are replaced so that a
-    // throw from a custom header cannot leave the cache half-updated.
-    const next = renderCoreMemory(entries, options);
+    // Rendered before the fields are replaced so a throw from a custom header
+    // cannot leave the cache half-updated.
+    const body = renderCoreMemory(entries, options);
+    const index = renderMemoryIndex(indexEntries, { header: options.indexHeader });
+    const next = [body, index].filter(Boolean).join("\n\n");
+
     this.signature = signature;
     this.text = next;
     return next;
@@ -177,7 +184,17 @@ export async function installCoreMemoryForAgent(agent, { db, config, resolveRole
         maxItemChars: config.coreMemoryMaxItemChars,
         minStrength: config.coreMemoryMinStrength,
       });
-      return cache.update(entries);
+      // Second tier: the memories that did not fit, as a compact catalogue.
+      // Without this they are invisible to the model even though they exist.
+      const indexEntries = config.enableMemoryIndex === false
+        ? []
+        : buildMemoryIndex(db, {
+            roleIds,
+            excludeIds: entries.map((e) => e.id),
+            maxTokens: config.memoryIndexMaxTokens,
+            limit: config.memoryIndexLimit,
+          });
+      return cache.update(entries, { indexEntries });
     } catch (e) {
       // A prompt section must never throw: a throw breaks prompt assembly for
       // every request on this agent. Degrade to an empty section instead.
