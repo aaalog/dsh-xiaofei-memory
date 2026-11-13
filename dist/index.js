@@ -896,61 +896,6 @@ function runEvolution(db, stats = {}) {
   return { ...current, changed };
 }
 
-// src/console.js
-function getMemoryStats(db) {
-  const byLayer = { core: 0, weekly: 0, recent: 0 };
-  const byRole = {};
-  const layerRows = db.prepare(
-    "SELECT layer, COUNT(*) AS n FROM memories WHERE status='active' GROUP BY layer"
-  ).all();
-  for (const r of layerRows) byLayer[r.layer] = r.n;
-  const roleRows = db.prepare(
-    "SELECT role_id, COUNT(*) AS n FROM memories WHERE status='active' GROUP BY role_id"
-  ).all();
-  for (const r of roleRows) byRole[r.role_id] = r.n;
-  return {
-    total: Object.values(byLayer).reduce((a, b) => a + b, 0),
-    byLayer,
-    byRole,
-    evolution: loadEvolution(db)
-  };
-}
-function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }) {
-  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
-  const rows = searchMemories(db, query, roleIds, { decay, limit });
-  return rows.map((r) => ({
-    id: r.id,
-    roleId: r.role_id,
-    layer: r.layer,
-    content: r.content,
-    strength: r.strength,
-    createdAt: r.created_at,
-    score: r._score,
-    similarity: r._sim,
-    entities: r.entities ?? []
-  }));
-}
-function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
-  return retrieveForPrompt(db, {
-    query,
-    roleIds: roleId && roleId !== "all" ? [roleId, "global"] : ["global"],
-    enableGraphRecall: true,
-    maxTokens,
-    limit: 8
-  });
-}
-async function triggerNightlySleep(db, { summarize, logger } = {}) {
-  const stats = await runNightlySleep(db, { summarize, logger });
-  metaSet(db, "meta.lastManualSleep", Date.now());
-  return stats;
-}
-function listSoulMemories(db) {
-  const rows = db.prepare(
-    "SELECT id, role_id, layer, content FROM memories WHERE id LIKE 'mem_%' ORDER BY id ASC LIMIT 10"
-  ).all();
-  return rows;
-}
-
 // src/core-memory.js
 var INJECTED_MARKER = "<memory-recall>";
 var DEFAULT_HEADER = "## \u5E38\u9A7B\u8BB0\u5FC6\n\u4EE5\u4E0B\u662F\u65E0\u9700\u68C0\u7D22\u3001\u59CB\u7EC8\u5728\u573A\u7684\u957F\u671F\u8BB0\u5FC6\u3002\u5B83\u4EEC\u662F\u80CC\u666F\u4E8B\u5B9E\uFF0C\u4E0D\u8981\u9010\u6761\u590D\u8FF0\u3002";
@@ -1153,6 +1098,132 @@ function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) {
   };
 }
 
+// src/console.js
+function getMemoryStats(db) {
+  const byLayer = { core: 0, weekly: 0, recent: 0 };
+  const byRole = {};
+  const layerRows = db.prepare(
+    "SELECT layer, COUNT(*) AS n FROM memories WHERE status='active' GROUP BY layer"
+  ).all();
+  for (const r of layerRows) byLayer[r.layer] = r.n;
+  const roleRows = db.prepare(
+    "SELECT role_id, COUNT(*) AS n FROM memories WHERE status='active' GROUP BY role_id"
+  ).all();
+  for (const r of roleRows) byRole[r.role_id] = r.n;
+  return {
+    total: Object.values(byLayer).reduce((a, b) => a + b, 0),
+    byLayer,
+    byRole,
+    evolution: loadEvolution(db)
+  };
+}
+function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }) {
+  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
+  const rows = searchMemories(db, query, roleIds, { decay, limit });
+  return rows.map((r) => ({
+    id: r.id,
+    roleId: r.role_id,
+    layer: r.layer,
+    content: r.content,
+    strength: r.strength,
+    createdAt: r.created_at,
+    score: r._score,
+    similarity: r._sim,
+    entities: r.entities ?? []
+  }));
+}
+function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
+  return retrieveForPrompt(db, {
+    query,
+    roleIds: roleId && roleId !== "all" ? [roleId, "global"] : ["global"],
+    enableGraphRecall: true,
+    maxTokens,
+    limit: 8
+  });
+}
+async function triggerNightlySleep(db, { summarize, logger } = {}) {
+  const stats = await runNightlySleep(db, { summarize, logger });
+  metaSet(db, "meta.lastManualSleep", Date.now());
+  return stats;
+}
+function getMemoryGraph(db, { roleId = "all", limit = 300, entitiesPerMemory = 6 } = {}) {
+  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : null;
+  const where = roleIds ? `WHERE status = 'active' AND role_id IN (${roleIds.map(() => "?").join(",")})` : `WHERE status = 'active'`;
+  const args = roleIds ?? [];
+  let rows;
+  try {
+    rows = db.prepare(
+      `SELECT id, role_id, layer, content, strength, created_at, entities
+       FROM memories ${where}
+       ORDER BY strength DESC, created_at DESC
+       LIMIT ?`
+    ).all(...args, Math.max(1, Math.min(500, Number(limit) || 300)));
+  } catch {
+    return { nodes: [], links: [], truncated: false };
+  }
+  const nodes = rows.map((r) => {
+    const ents = parseJsonList(r.entities).filter((e) => isMeaningfulEntity(e)).slice(0, Math.max(1, entitiesPerMemory));
+    return {
+      id: r.id,
+      roleId: r.role_id,
+      layer: r.layer,
+      strength: Number(r.strength) || 0,
+      createdAt: r.created_at,
+      excerpt: String(r.content ?? "").replace(/\s+/g, " ").slice(0, 160),
+      length: String(r.content ?? "").length,
+      entities: ents
+    };
+  });
+  const byEntity = /* @__PURE__ */ new Map();
+  for (const n of nodes) {
+    for (const e of n.entities) {
+      if (!byEntity.has(e)) byEntity.set(e, []);
+      byEntity.get(e).push(n.id);
+    }
+  }
+  const links = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [entity, ids] of byEntity) {
+    if (ids.length < 2 || ids.length > 12) continue;
+    const weight = Number((1 / Math.log2(2 + ids.length)).toFixed(3));
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const key = ids[i] < ids[j] ? `${ids[i]}|${ids[j]}` : `${ids[j]}|${ids[i]}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        links.push({ source: ids[i], target: ids[j], entity, weight });
+      }
+    }
+  }
+  return {
+    nodes,
+    links,
+    truncated: rows.length >= limit,
+    layers: nodes.reduce((acc, n) => {
+      acc[n.layer] = (acc[n.layer] || 0) + 1;
+      return acc;
+    }, {})
+  };
+}
+function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1 } = {}) {
+  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
+  const entries = selectCoreMemories(db, { roleIds, maxTokens, maxItemChars, minStrength });
+  const text = renderCoreMemory(entries);
+  return {
+    entries,
+    text,
+    tokens: tokenEstimate(text),
+    section: CORE_MEMORY_SECTION_NAME,
+    order: CORE_MEMORY_SECTION_ORDER
+  };
+}
+function listSoulMemories(db) {
+  const rows = db.prepare(
+    "SELECT id, role_id, layer, content FROM memories WHERE id LIKE 'mem_%' ORDER BY id ASC LIMIT 10"
+  ).all();
+  return rows;
+}
+
 // src/index.js
 var name = "dsh-xiaofei-memory";
 var inject = ["tools"];
@@ -1201,6 +1272,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
+var BUILD_STAMP = true ? "20261113114247" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 function defaultDbPath() {
@@ -1443,6 +1515,10 @@ async function apply(ctx, config) {
     }
   };
   setBridgeStatus("waiting");
+  try {
+    metaSet(db, "bridge.build", BUILD_STAMP);
+  } catch {
+  }
   const sendJson = (res, status, body) => {
     try {
       res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -1482,6 +1558,20 @@ async function apply(ctx, config) {
         return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: loadEvolution(db).timeDecay });
       case "preview":
         return previewRecall(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", maxTokens: config.maxRecallTokens });
+      case "build":
+        return { build: BUILD_STAMP };
+      case "graph":
+        return getMemoryGraph(db, {
+          roleId: String(args?.roleId ?? "all"),
+          limit: Number(args?.limit) || 300
+        });
+      case "core":
+        return previewCoreMemory(db, {
+          roleId: String(args?.roleId ?? config.roleId),
+          maxTokens: config.coreMemoryMaxTokens,
+          maxItemChars: config.coreMemoryMaxItemChars,
+          minStrength: config.coreMemoryMinStrength
+        });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
         return triggerNightlySleep(db, { summarize });

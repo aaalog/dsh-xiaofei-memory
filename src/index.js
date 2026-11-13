@@ -15,7 +15,7 @@ import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
 import { loadEvolution, runEvolution } from "./evolution.js";
-import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories } from "./console.js";
+import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories, previewCoreMemory, getMemoryGraph } from "./console.js";
 import { registerCoreMemory } from "./core-memory.js";
 
 export const name = "dsh-xiaofei-memory";
@@ -70,6 +70,9 @@ export const Config = z.object({
     { id: "work-assistant", name: "开发A", description: "任务流转与多角色协作", enabled: true },
   ]).volatile(),
 });
+
+// Injected by build.mjs. The fallback keeps source-mode runs working.
+const BUILD_STAMP = typeof __DSHXF_BUILD__ === "string" ? __DSHXF_BUILD__ : "dev";
 
 const LAST_SLEEP_KEY = "meta.lastSleepAt";
 const RECALL_STATS_KEY = "meta.recallStats";
@@ -343,6 +346,9 @@ export async function apply(ctx, config) {
     try { metaSet(db, "bridge.status", status); } catch { /* ignore */ }
   };
   setBridgeStatus("waiting");
+  // The client compares this against its own injected stamp. A mismatch means
+  // the page was rebuilt but this process still runs the previous host module.
+  try { metaSet(db, "bridge.build", BUILD_STAMP); } catch { /* ignore */ }
 
   const sendJson = (res, status, body) => {
     try {
@@ -371,6 +377,23 @@ export async function apply(ctx, config) {
         return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: loadEvolution(db).timeDecay });
       case "preview":
         return previewRecall(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", maxTokens: config.maxRecallTokens });
+      case "build":
+        // Answer from the running module, not from the database: a stale
+        // process would happily read a newer value out of the file.
+        return { build: BUILD_STAMP };
+      case "graph":
+        return getMemoryGraph(db, {
+          roleId: String(args?.roleId ?? "all"),
+          limit: Number(args?.limit) || 300,
+        });
+      case "core":
+        // The always-on slice, rendered exactly as the prompt section does.
+        return previewCoreMemory(db, {
+          roleId: String(args?.roleId ?? config.roleId),
+          maxTokens: config.coreMemoryMaxTokens,
+          maxItemChars: config.coreMemoryMaxItemChars,
+          minStrength: config.coreMemoryMinStrength,
+        });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
         return triggerNightlySleep(db, { summarize });

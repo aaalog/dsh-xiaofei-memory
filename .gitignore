@@ -9,3 +9,6 @@ node_modules/
 
 # Local rollback snapshots (db backups, dist copies). Never commit.
 .backup/
+
+# Vision-router render artifacts (screenshots used for UI verification)
+.dsh-vision-router/

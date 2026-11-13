@@ -69,3 +69,116 @@
   position: absolute; top: 8px; right: 12px; border: none; background: transparent;
   font-size: 22px; line-height: 1; cursor: pointer; color: var(--dsh-fg, #57606a);
 }
+
+/* ── Conversation View (记忆引擎 tab) ─────────────────────────────────────── */
+/* The Conversation View is rendered inside the session's main column, which
+   also hosts the composer. A View must own the full height and its own scroll
+   region, otherwise the composer stays visible underneath it. */
+.dshxf-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 16px 20px 32px;
+  gap: 14px;
+  align-items: stretch;
+  font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);
+  color: var(--dsh-fg, #1f2328);
+}
+.dshxf-view > * { flex: none; }
+.dshxf-inner { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 980px; margin: 0 auto; flex: none; }
+.dshxf-card {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--dsh-border, #e1e4e8);
+  border-radius: 10px; padding: 14px 16px;
+  background: var(--dsh-bg-1, #fff);
+}
+.dshxf-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dshxf-pre {
+  margin: 0; padding: 10px 12px; overflow: auto; max-height: 320px;
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+  background: var(--dsh-bg-2, #f6f8fa); border-radius: 8px;
+  border: 1px solid var(--dsh-border, #e1e4e8);
+}
+.dshxf-stat {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 84px; padding: 10px 14px; border-radius: 8px;
+  background: var(--dsh-bg-2, #f6f8fa); border: 1px solid var(--dsh-border, #e1e4e8);
+}
+.dshxf-stat b { font-size: 20px; font-weight: 600; }
+.dshxf-stat span { font-size: 11px; opacity: .7; }
+
+/* ── Memory sea (canvas starfield) ───────────────────────────────────────── */
+.dshxf-sea {
+  position: relative;
+  border-radius: 10px;
+  border: 1px solid var(--dsh-border, #e1e4e8);
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(70,100,170,.10), transparent 60%),
+    radial-gradient(90% 80% at 50% 100%, rgba(120,90,180,.08), transparent 60%),
+    var(--dsh-bg-2, #f6f8fa);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.dshxf-sea-canvas { display: block; width: 100%; }
+.dshxf-sea-legend {
+  position: absolute; right: 10px; bottom: 8px;
+  display: flex; gap: 10px; font-size: 11px; opacity: .72;
+  pointer-events: none;
+}
+.dshxf-sea-key { display: inline-flex; align-items: center; gap: 4px; }
+.dshxf-sea-key i {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block; box-shadow: 0 0 6px currentColor;
+}
+.dshxf-sea-pick {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; margin-bottom: 10px;
+  border: 1px solid var(--dsh-border, #e1e4e8); border-radius: 8px;
+  background: var(--dsh-bg-1, #fff);
+}
+
+/* ── Panel minimums ─────────────────────────────────────────────────────── */
+/* Every tab must occupy a stable block so switching between them does not
+   collapse the page to a sliver. Applies to all four console tabs and the
+   View's own cards. */
+.dshxf-panel {
+  min-height: 320px;
+}
+.dshxf-panel > div {
+  min-height: 300px;
+}
+.dshxf-sea {
+  min-height: 260px;
+}
+.dshxf-sea-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--dsh-fg, #8b949e);
+  pointer-events: none;
+}
+.dshxf-card {
+  min-height: 0;
+}
+/* A card that only holds one short row still reads as a card. */
+.dshxf-view .dshxf-card {
+  min-height: 56px;
+}
+/* Keep the console embedded in the View from collapsing. */
+.dshxf-view .dshxf-console {
+  min-height: 340px;
+}
+.dshxf-view .dshxf-tabs {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--dsh-bg-1, #fff);
+}
+
+/* Stale-build warning: the page is newer than the running host module. */
+.dshxf-warn {
+  border-color: #d4a72c;
+  background: #fff8e1;
+}
+.dshxf-warn b { font-size: 13px; }
+.dshxf-warn .dshxf-note { margin: 4px 0 0; }

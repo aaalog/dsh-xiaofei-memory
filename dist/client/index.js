@@ -43,15 +43,215 @@ module.exports = __toCommonJS(index_exports);
 var React = __toESM(require("react"), 1);
 
 // src/client/styles.css
-var styles_default = '/* dsh-xiaofei-memory management console styles */\n.dshxf-console {\n  display: flex;\n  flex-direction: column;\n  gap: 12px;\n  padding: 4px 2px;\n  font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);\n  color: var(--dsh-fg, #1f2328);\n}\n.dshxf-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--dsh-border, #e1e4e8); }\n.dshxf-tab {\n  appearance: none; border: 1px solid transparent; background: transparent;\n  padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer;\n  font: inherit; font-size: 13px; color: var(--dsh-fg, #57606a);\n}\n.dshxf-tab.is-active { background: var(--dsh-bg-2, #f6f8fa); border-color: var(--dsh-border, #e1e4e8); border-bottom-color: var(--dsh-bg-2, #f6f8fa); color: var(--dsh-fg, #1f2328); font-weight: 600; }\n.dshxf-panel { display: flex; flex-direction: column; gap: 10px; }\n.dshxf-h { margin: 0 0 4px; font-size: 15px; font-weight: 600; }\n.dshxf-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }\n.dshxf-in {\n  padding: 6px 8px; border: 1px solid var(--dsh-border, #d0d7de); border-radius: 6px;\n  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328); font: inherit; font-size: 13px;\n}\n.dshxf-grow { flex: 1; min-width: 90px; }\n.dshxf-check { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }\n.dshxf-btn {\n  appearance: none; padding: 6px 12px; border: 1px solid var(--dsh-border, #d0d7de);\n  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;\n  font: inherit; font-size: 13px; color: var(--dsh-fg, #1f2328);\n}\n.dshxf-btn:hover { background: var(--dsh-bg-3, #eaeef2); }\n.dshxf-btn.dshxf-primary { background: #2da44e; border-color: #2da44e; color: #fff; }\n.dshxf-btn.dshxf-primary:hover { background: #2c974b; }\n.dshxf-btn.dshxf-danger { background: #cf222e; border-color: #cf222e; color: #fff; }\n.dshxf-btn.dshxf-danger:hover { background: #b62324; }\n.dshxf-btn.dshxf-lg { padding: 8px 18px; font-weight: 600; }\n.dshxf-btn:disabled { opacity: 0.6; cursor: not-allowed; }\n.dshxf-msg { font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-note { font-size: 12px; color: var(--dsh-fg, #6e7781); background: var(--dsh-bg-2, #f6f8fa); padding: 8px 10px; border-radius: 6px; }\n.dshxf-stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dsh-fg, #57606a); }\n.dshxf-stats b { color: var(--dsh-fg, #1f2328); }\n.dshxf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }\n.dshxf-mem { border: 1px solid var(--dsh-border, #e1e4e8); border-radius: 8px; padding: 8px 10px; background: var(--dsh-bg, #fff); }\n.dshxf-mem-meta { display: flex; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }\n.dshxf-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--dsh-bg-3, #eaeef2); color: var(--dsh-fg, #57606a); }\n.dshxf-tag.dshxf-str { background: #ddf4ff; color: #0969da; }\n.dshxf-mem-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }\n\n/* \u2500\u2500 header trigger + floating overlay console \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */\n.dshxf-trigger {\n  appearance: none; padding: 4px 10px; border: 1px solid var(--dsh-border, #d0d7de);\n  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;\n  font: inherit; font-size: 12px; color: var(--dsh-fg, #1f2328);\n}\n.dshxf-trigger:hover { background: var(--dsh-bg-3, #eaeef2); }\n.dshxf-overlay {\n  position: fixed; inset: 0; z-index: 100000; display: flex;\n  align-items: center; justify-content: center;\n  background: rgba(0, 0, 0, 0.45);\n}\n.dshxf-modal {\n  position: relative; width: min(920px, 92vw); max-height: 86vh; overflow: auto;\n  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328);\n  border-radius: 12px; padding: 18px 20px;\n  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);\n}\n.dshxf-close {\n  position: absolute; top: 8px; right: 12px; border: none; background: transparent;\n  font-size: 22px; line-height: 1; cursor: pointer; color: var(--dsh-fg, #57606a);\n}\n';
+var styles_default = `/* dsh-xiaofei-memory management console styles */
+.dshxf-console {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px;
+  font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);
+  color: var(--dsh-fg, #1f2328);
+}
+.dshxf-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--dsh-border, #e1e4e8); }
+.dshxf-tab {
+  appearance: none; border: 1px solid transparent; background: transparent;
+  padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--dsh-fg, #57606a);
+}
+.dshxf-tab.is-active { background: var(--dsh-bg-2, #f6f8fa); border-color: var(--dsh-border, #e1e4e8); border-bottom-color: var(--dsh-bg-2, #f6f8fa); color: var(--dsh-fg, #1f2328); font-weight: 600; }
+.dshxf-panel { display: flex; flex-direction: column; gap: 10px; }
+.dshxf-h { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+.dshxf-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.dshxf-in {
+  padding: 6px 8px; border: 1px solid var(--dsh-border, #d0d7de); border-radius: 6px;
+  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328); font: inherit; font-size: 13px;
+}
+.dshxf-grow { flex: 1; min-width: 90px; }
+.dshxf-check { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dsh-fg, #57606a); }
+.dshxf-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dshxf-btn {
+  appearance: none; padding: 6px 12px; border: 1px solid var(--dsh-border, #d0d7de);
+  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--dsh-fg, #1f2328);
+}
+.dshxf-btn:hover { background: var(--dsh-bg-3, #eaeef2); }
+.dshxf-btn.dshxf-primary { background: #2da44e; border-color: #2da44e; color: #fff; }
+.dshxf-btn.dshxf-primary:hover { background: #2c974b; }
+.dshxf-btn.dshxf-danger { background: #cf222e; border-color: #cf222e; color: #fff; }
+.dshxf-btn.dshxf-danger:hover { background: #b62324; }
+.dshxf-btn.dshxf-lg { padding: 8px 18px; font-weight: 600; }
+.dshxf-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.dshxf-msg { font-size: 12px; color: var(--dsh-fg, #57606a); }
+.dshxf-note { font-size: 12px; color: var(--dsh-fg, #6e7781); background: var(--dsh-bg-2, #f6f8fa); padding: 8px 10px; border-radius: 6px; }
+.dshxf-stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dsh-fg, #57606a); }
+.dshxf-stats b { color: var(--dsh-fg, #1f2328); }
+.dshxf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.dshxf-mem { border: 1px solid var(--dsh-border, #e1e4e8); border-radius: 8px; padding: 8px 10px; background: var(--dsh-bg, #fff); }
+.dshxf-mem-meta { display: flex; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+.dshxf-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--dsh-bg-3, #eaeef2); color: var(--dsh-fg, #57606a); }
+.dshxf-tag.dshxf-str { background: #ddf4ff; color: #0969da; }
+.dshxf-mem-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+
+/* \u2500\u2500 header trigger + floating overlay console \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+.dshxf-trigger {
+  appearance: none; padding: 4px 10px; border: 1px solid var(--dsh-border, #d0d7de);
+  border-radius: 6px; background: var(--dsh-bg-2, #f6f8fa); cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--dsh-fg, #1f2328);
+}
+.dshxf-trigger:hover { background: var(--dsh-bg-3, #eaeef2); }
+.dshxf-overlay {
+  position: fixed; inset: 0; z-index: 100000; display: flex;
+  align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.dshxf-modal {
+  position: relative; width: min(920px, 92vw); max-height: 86vh; overflow: auto;
+  background: var(--dsh-bg, #fff); color: var(--dsh-fg, #1f2328);
+  border-radius: 12px; padding: 18px 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.dshxf-close {
+  position: absolute; top: 8px; right: 12px; border: none; background: transparent;
+  font-size: 22px; line-height: 1; cursor: pointer; color: var(--dsh-fg, #57606a);
+}
+
+/* \u2500\u2500 Conversation View (\u8BB0\u5FC6\u5F15\u64CE tab) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* The Conversation View is rendered inside the session's main column, which
+   also hosts the composer. A View must own the full height and its own scroll
+   region, otherwise the composer stays visible underneath it. */
+.dshxf-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 16px 20px 32px;
+  gap: 14px;
+  align-items: stretch;
+  font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);
+  color: var(--dsh-fg, #1f2328);
+}
+.dshxf-view > * { flex: none; }
+.dshxf-inner { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 980px; margin: 0 auto; flex: none; }
+.dshxf-card {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--dsh-border, #e1e4e8);
+  border-radius: 10px; padding: 14px 16px;
+  background: var(--dsh-bg-1, #fff);
+}
+.dshxf-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dshxf-pre {
+  margin: 0; padding: 10px 12px; overflow: auto; max-height: 320px;
+  font-family: var(--dsh-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+  background: var(--dsh-bg-2, #f6f8fa); border-radius: 8px;
+  border: 1px solid var(--dsh-border, #e1e4e8);
+}
+.dshxf-stat {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 84px; padding: 10px 14px; border-radius: 8px;
+  background: var(--dsh-bg-2, #f6f8fa); border: 1px solid var(--dsh-border, #e1e4e8);
+}
+.dshxf-stat b { font-size: 20px; font-weight: 600; }
+.dshxf-stat span { font-size: 11px; opacity: .7; }
+
+/* \u2500\u2500 Memory sea (canvas starfield) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+.dshxf-sea {
+  position: relative;
+  border-radius: 10px;
+  border: 1px solid var(--dsh-border, #e1e4e8);
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(70,100,170,.10), transparent 60%),
+    radial-gradient(90% 80% at 50% 100%, rgba(120,90,180,.08), transparent 60%),
+    var(--dsh-bg-2, #f6f8fa);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.dshxf-sea-canvas { display: block; width: 100%; }
+.dshxf-sea-legend {
+  position: absolute; right: 10px; bottom: 8px;
+  display: flex; gap: 10px; font-size: 11px; opacity: .72;
+  pointer-events: none;
+}
+.dshxf-sea-key { display: inline-flex; align-items: center; gap: 4px; }
+.dshxf-sea-key i {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block; box-shadow: 0 0 6px currentColor;
+}
+.dshxf-sea-pick {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; margin-bottom: 10px;
+  border: 1px solid var(--dsh-border, #e1e4e8); border-radius: 8px;
+  background: var(--dsh-bg-1, #fff);
+}
+
+/* \u2500\u2500 Panel minimums \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* Every tab must occupy a stable block so switching between them does not
+   collapse the page to a sliver. Applies to all four console tabs and the
+   View's own cards. */
+.dshxf-panel {
+  min-height: 320px;
+}
+.dshxf-panel > div {
+  min-height: 300px;
+}
+.dshxf-sea {
+  min-height: 260px;
+}
+.dshxf-sea-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--dsh-fg, #8b949e);
+  pointer-events: none;
+}
+.dshxf-card {
+  min-height: 0;
+}
+/* A card that only holds one short row still reads as a card. */
+.dshxf-view .dshxf-card {
+  min-height: 56px;
+}
+/* Keep the console embedded in the View from collapsing. */
+.dshxf-view .dshxf-console {
+  min-height: 340px;
+}
+.dshxf-view .dshxf-tabs {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--dsh-bg-1, #fff);
+}
+
+/* Stale-build warning: the page is newer than the running host module. */
+.dshxf-warn {
+  border-color: #d4a72c;
+  background: #fff8e1;
+}
+.dshxf-warn b { font-size: 13px; }
+.dshxf-warn .dshxf-note { margin: 4px 0 0; }
+`;
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
+var BUILD_STAMP = true ? "20261113114247" : "dev";
+function useBuildMismatch() {
+  const [host, setHost] = React.useState(null);
+  React.useEffect(() => {
+    let alive = true;
+    callBridge("build").then((r) => {
+      if (alive && r && typeof r.build === "string") setHost(r.build);
+    }).catch(() => {
+      if (alive) setHost("unknown");
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return { client: BUILD_STAMP, host };
+}
 async function callBridge(op, args = {}) {
   const headers = { "content-type": "application/json" };
   const bridge = globalThis.DSHXF_BRIDGE;
   if (bridge && typeof bridge.token === "string") headers["x-dshxf-token"] = bridge.token;
-  const res = await fetch("dshxf/bridge", {
+  const res = await fetch("/dshxf/bridge", {
     method: "POST",
     headers,
     body: JSON.stringify({ op, args })
@@ -75,31 +275,55 @@ function apply(ctx) {
   } catch {
   }
   probe("apply");
-  let disposeHeader = null;
+  const disposeView = mountConversationView(ctx);
   const disposeSettings = mountSettings(ctx);
-  try {
-    disposeHeader = ctx.slots.inject("conversation.session.header.actions", () => {
-      try {
-        return ctx.slots.register(
-          { name: "conversation.session.header.actions", id: NS, order: 200 },
-          HeaderButton
-        );
-      } catch (e) {
-        console.warn("[dsh-xiaofei-memory] header slot unavailable:", e);
-        return () => {
-        };
-      }
-    });
-  } catch (e) {
-    console.warn("[dsh-xiaofei-memory] header slot inject failed", e);
-  }
   return () => {
     try {
-      disposeHeader?.();
+      disposeView?.();
     } catch {
     }
     try {
       disposeSettings?.();
+    } catch {
+    }
+  };
+}
+function mountConversationView(ctx) {
+  let disposeEntry = null;
+  let disposeInjection = null;
+  const register = () => {
+    try {
+      disposeEntry?.();
+    } catch {
+    }
+    try {
+      disposeEntry = ctx.slots.register(
+        {
+          name: "conversation.view",
+          id: NS,
+          order: 40,
+          // A thunk so the label follows the active locale without re-registering.
+          label: () => "\u8BB0\u5FC6\u5F15\u64CE"
+        },
+        MemoryView
+      );
+      probe("conversation.view registered");
+    } catch (e) {
+      console.warn("[dsh-xiaofei-memory] conversation.view unavailable:", e);
+    }
+  };
+  try {
+    disposeInjection = ctx.slots.inject("conversation.view", register);
+  } catch (e) {
+    console.warn("[dsh-xiaofei-memory] conversation.view inject failed", e);
+  }
+  return () => {
+    try {
+      disposeInjection?.();
+    } catch {
+    }
+    try {
+      disposeEntry?.();
     } catch {
     }
   };
@@ -195,37 +419,163 @@ function probe(msg) {
   } catch {
   }
 }
-function HeaderButton() {
-  const [open, setOpen] = React.useState(false);
-  const ctx = window.__ctx__;
-  const scope = ctx ? getScope(ctx) : void 0;
+function MemoryView(_props) {
+  const [core, setCore] = React.useState(null);
+  const [stats, setStats] = React.useState(null);
+  const [err, setErr] = React.useState("");
+  const [q, setQ] = React.useState("");
+  const [hits, setHits] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    callBridge("core").then((c) => {
+      if (alive) setCore(c);
+    }).catch((e) => {
+      if (alive) setErr(String(e?.message ?? e));
+    });
+    callBridge("stats").then((s) => {
+      if (alive) setStats(s);
+    }).catch(() => {
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const search = async () => {
+    if (!q.trim()) {
+      setHits(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      setHits(await callBridge("search", { query: q }));
+    } catch (e) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const layers = stats?.byLayer ?? {};
+  const build = useBuildMismatch();
+  const stale = build.host !== null && build.host !== "unknown" && build.host !== build.client;
   return React.createElement(
-    React.Fragment,
-    null,
+    "div",
+    { className: "dshxf-view" },
     React.createElement(
-      "button",
-      {
-        className: "dshxf-trigger",
-        title: "\u5C0F\u80A5\u9C7C\u8BB0\u5FC6\u5F15\u64CE",
-        onClick: () => setOpen((v) => !v)
-      },
-      "\u8BB0\u5FC6\u5F15\u64CE"
-    ),
-    open ? React.createElement(
       "div",
-      {
-        className: "dshxf-overlay",
-        onClick: (e) => {
-          if (e.target === e.currentTarget) setOpen(false);
-        }
-      },
+      { className: "dshxf-inner" },
+      stale ? React.createElement(
+        "div",
+        { className: "dshxf-card dshxf-warn" },
+        React.createElement("b", null, "\u63D2\u4EF6\u5DF2\u66F4\u65B0\uFF0C\u4F46\u8FD0\u884C\u65F6\u4ECD\u5728\u7528\u65E7\u7248\u672C"),
+        React.createElement(
+          "div",
+          { className: "dshxf-note" },
+          `\u9875\u9762\u6784\u5EFA ${build.client} \xB7 \u8FD0\u884C\u65F6\u6784\u5EFA ${build.host}\u3002\u8BF7\u91CD\u542F DSH \u4EE5\u52A0\u8F7D\u65B0\u7684\u540E\u7AEF\u6A21\u5757\u3002`
+        )
+      ) : null,
+      err ? React.createElement(
+        "div",
+        { className: "dshxf-card dshxf-danger" },
+        React.createElement("div", { className: "dshxf-note" }, `\u6570\u636E\u6865\u9519\u8BEF\uFF1A${err}`)
+      ) : null,
+      // ── always-on block ──────────────────────────────────────────────
       React.createElement(
         "div",
-        { className: "dshxf-modal" },
-        React.createElement("button", { className: "dshxf-close", onClick: () => setOpen(false) }, "\xD7"),
-        React.createElement(ConsolePage, { scope })
+        { className: "dshxf-card" },
+        React.createElement(
+          "div",
+          { className: "dshxf-card-head" },
+          React.createElement("h3", { className: "dshxf-h" }, "\u5E38\u9A7B\u8BB0\u5FC6"),
+          React.createElement(
+            "span",
+            { className: "dshxf-tag" },
+            core ? `${core.entries?.length ?? 0} \u6761 \xB7 ${core.tokens} tokens` : "\u52A0\u8F7D\u4E2D\u2026"
+          )
+        ),
+        React.createElement(
+          "p",
+          { className: "dshxf-note" },
+          "\u4EE5\u4E0B\u5185\u5BB9\u6BCF\u8F6E\u90FD\u4F1A\u4F5C\u4E3A\u7CFB\u7EDF\u63D0\u793A\u8BCD\u6CE8\u5165\uFF0C\u4E0D\u4F9D\u8D56\u68C0\u7D22\u3002\u6BB5\u540D ",
+          React.createElement("code", null, core?.section ?? "memory:core"),
+          "\uFF0C\u987A\u5E8F ",
+          React.createElement("code", null, String(core?.order ?? 10150)),
+          "\u3002"
+        ),
+        React.createElement("pre", { className: "dshxf-pre" }, core?.text || "\uFF08\u6682\u65E0\u5E38\u9A7B\u8BB0\u5FC6\uFF09")
+      ),
+      // ── stats ────────────────────────────────────────────────────────
+      React.createElement(
+        "div",
+        { className: "dshxf-card" },
+        React.createElement("h3", { className: "dshxf-h" }, "\u8BB0\u5FC6\u603B\u91CF"),
+        React.createElement(
+          "div",
+          { className: "dshxf-stats" },
+          React.createElement(
+            "div",
+            { className: "dshxf-stat" },
+            React.createElement("b", null, String(stats?.total ?? 0)),
+            React.createElement("span", null, "\u6761\u6D3B\u8DC3")
+          ),
+          ["core", "weekly", "recent"].map((k) => React.createElement(
+            "div",
+            { className: "dshxf-stat", key: k },
+            React.createElement("b", null, String(layers[k] ?? 0)),
+            React.createElement("span", null, k)
+          ))
+        )
+      ),
+      // ── full console (roles / graph / sleep / system) ────────────────
+      // Reuses the Settings page component verbatim: one implementation, two
+      // mount points, so the View is never a reduced copy of the real console.
+      React.createElement(
+        "div",
+        { className: "dshxf-card" },
+        React.createElement(ConsolePage, { scope: getScope(window.__ctx__) })
+      ),
+      // ── search ───────────────────────────────────────────────────────
+      React.createElement(
+        "div",
+        { className: "dshxf-card" },
+        React.createElement("h3", { className: "dshxf-h" }, "\u68C0\u7D22\u9884\u89C8"),
+        React.createElement(
+          "div",
+          { className: "dshxf-row" },
+          React.createElement("input", {
+            className: "dshxf-in dshxf-grow",
+            placeholder: "\u8F93\u5165\u4E00\u53E5\u8BDD\uFF0C\u770B\u4F1A\u68C0\u7D22\u5230\u4EC0\u4E48\u2026",
+            value: q,
+            onChange: (e) => setQ(e.target.value),
+            onKeyDown: (e) => {
+              if (e.key === "Enter") void search();
+            }
+          }),
+          React.createElement("button", {
+            className: "dshxf-btn dshxf-primary",
+            onClick: () => void search(),
+            disabled: busy
+          }, busy ? "\u68C0\u7D22\u4E2D\u2026" : "\u68C0\u7D22")
+        ),
+        hits === null ? null : React.createElement(
+          "div",
+          { className: "dshxf-list" },
+          hits.length === 0 ? React.createElement("div", { className: "dshxf-note" }, "\u65E0\u5339\u914D") : hits.map((m) => React.createElement(
+            "div",
+            { className: "dshxf-mem", key: m.id },
+            React.createElement(
+              "div",
+              { className: "dshxf-mem-meta" },
+              React.createElement("span", { className: "dshxf-tag" }, m.layer),
+              React.createElement("span", { className: "dshxf-tag" }, m.roleId),
+              React.createElement("span", { className: "dshxf-str" }, `s=${Number(m.strength).toFixed(2)}`),
+              React.createElement("span", { className: "dshxf-str" }, `score=${Number(m.score).toFixed(3)}`)
+            ),
+            React.createElement("div", { className: "dshxf-mem-body" }, m.content)
+          ))
+        )
       )
-    ) : null
+    )
   );
 }
 function getScope(ctx) {
@@ -341,6 +691,265 @@ function RolesTab({ scope, user }) {
     }
   ), /* @__PURE__ */ React.createElement("label", { className: "dshxf-check" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: r.enabled, onChange: (e) => mutate(i, { enabled: e.target.checked }) }), "\u542F\u7528"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-danger", onClick: () => setDraft((p) => p.filter((_, idx) => idx !== i)) }, "\u5220"))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: () => setDraft((p) => [...p, { id: "", name: "", description: "", enabled: true }]) }, "+ \u6DFB\u52A0\u89D2\u8272"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-primary", onClick: save }, "\u4FDD\u5B58\u89D2\u8272"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)));
 }
+var LAYER_COLORS = {
+  core: "#e8b84b",
+  weekly: "#4fb3d9",
+  recent: "#9b8cd9",
+  diffusion: "#6b7280"
+};
+function MemorySea(props) {
+  const canvasRef = React.useRef(null);
+  const wrapRef = React.useRef(null);
+  const stateRef = React.useRef({ nodes: [], links: [] });
+  const hoverRef = React.useRef(null);
+  const [size, setSize] = React.useState({ w: 640, h: 300 });
+  React.useEffect(() => {
+    const cap = 200;
+    const raw = (props.nodes || []).slice(0, cap);
+    const { w, h } = size;
+    const nodes = raw.map((n, i) => {
+      const a = i / Math.max(1, raw.length) * Math.PI * 2;
+      const r = Math.min(w, h) * (0.14 + 0.34 * (i % 7 / 7));
+      return {
+        id: n.id,
+        layer: n.layer || "recent",
+        strength: Number(n.strength) || 1,
+        excerpt: n.excerpt || "",
+        entities: Array.isArray(n.entities) ? n.entities : [],
+        x: w / 2 + Math.cos(a) * r,
+        y: h / 2 + Math.sin(a) * r,
+        vx: 0,
+        vy: 0
+      };
+    });
+    const known = new Set(nodes.map((n) => n.id));
+    const links = (props.links || []).filter((l) => known.has(l.source) && known.has(l.target)).slice(0, 900);
+    stateRef.current = { nodes, links };
+  }, [props.nodes, props.links]);
+  React.useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const w = Math.round(r.width);
+      if (w > 0) {
+        setSize((cur) => cur.w === w ? cur : { w, h: Math.max(240, Math.min(420, Math.round(w * 0.42))) });
+      }
+    };
+    measure();
+    let ro = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(measure);
+      ro.observe(el);
+    }
+    const t = setTimeout(measure, 60);
+    return () => {
+      clearTimeout(t);
+      try {
+        ro?.disconnect();
+      } catch {
+      }
+    };
+  }, []);
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = size.w * dpr;
+    canvas.height = size.h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    let raf = 0;
+    let alive = true;
+    let ticks = 0;
+    const step = () => {
+      const { nodes, links } = stateRef.current;
+      const { w, h } = size;
+      const cx = w / 2, cy = h / 2;
+      const index = new Map(nodes.map((n) => [n.id, n]));
+      for (const n of nodes) {
+        n.vx += (cx - n.x) * 12e-4;
+        n.vy += (cy - n.y) * 12e-4;
+      }
+      for (const l of links) {
+        const a = index.get(l.source), b = index.get(l.target);
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const target = 60 + 40 * (1 - Math.min(1, l.weight));
+        const f = (d - target) / d * 0.012 * (0.4 + l.weight);
+        const fx = dx * f, fy = dy * f;
+        a.vx += fx;
+        a.vy += fy;
+        b.vx -= fx;
+        b.vy -= fy;
+      }
+      if (nodes.length <= 200) {
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const a = nodes[i], b = nodes[j];
+            let dx = b.x - a.x, dy = b.y - a.y;
+            let d2 = dx * dx + dy * dy;
+            if (d2 < 1) {
+              d2 = 1;
+              dx = 0.5;
+              dy = 0.5;
+            }
+            if (d2 > 4e4) continue;
+            const f = 90 / d2;
+            const d = Math.sqrt(d2);
+            a.vx -= dx / d * f;
+            a.vy -= dy / d * f;
+            b.vx += dx / d * f;
+            b.vy += dy / d * f;
+          }
+        }
+      }
+      for (const n of nodes) {
+        n.vx *= 0.86;
+        n.vy *= 0.86;
+        n.x += n.vx;
+        n.y += n.vy;
+        const pad = 18;
+        if (n.x < pad) {
+          n.x = pad;
+          n.vx *= -0.4;
+        }
+        if (n.x > w - pad) {
+          n.x = w - pad;
+          n.vx *= -0.4;
+        }
+        if (n.y < pad) {
+          n.y = pad;
+          n.vy *= -0.4;
+        }
+        if (n.y > h - pad) {
+          n.y = h - pad;
+          n.vy *= -0.4;
+        }
+      }
+      ctx.clearRect(0, 0, w, h);
+      const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.6);
+      glow.addColorStop(0, "rgba(80,110,180,0.10)");
+      glow.addColorStop(1, "rgba(80,110,180,0)");
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, w, h);
+      const hi = props.highlight || null;
+      const hovered = hoverRef.current;
+      for (const l of links) {
+        const a = index.get(l.source), b = index.get(l.target);
+        if (!a || !b) continue;
+        const active = hi ? a.id === hi || b.id === hi : false;
+        ctx.strokeStyle = active ? "rgba(120,200,255,0.55)" : "rgba(140,160,200," + (0.05 + 0.12 * l.weight) + ")";
+        ctx.lineWidth = active ? 1.4 : 0.6;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      for (const n of nodes) {
+        const base = LAYER_COLORS[n.layer] || LAYER_COLORS.recent;
+        const r = 2.2 + Math.min(5.5, Math.log2(1 + n.strength) * 1.7);
+        const isHi = hi === n.id;
+        const isHover = hovered === n.id;
+        ctx.globalAlpha = hi && !isHi ? 0.28 : 1;
+        const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3.2);
+        g.addColorStop(0, base);
+        g.addColorStop(0.35, base + "88");
+        g.addColorStop(1, base + "00");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r * 3.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = base;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        if (isHi || isHover) {
+          ctx.strokeStyle = isHi ? "#7fd4ff" : "#ffffff";
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+      ticks++;
+      const moving = nodes.some((n) => Math.abs(n.vx) + Math.abs(n.vy) > 0.05);
+      if (alive && (moving || ticks < 120)) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    const pick = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+      let best = null;
+      let bestD = 22;
+      for (const n of stateRef.current.nodes) {
+        const d = Math.hypot(n.x - mx, n.y - my);
+        if (d < bestD) {
+          bestD = d;
+          best = n;
+        }
+      }
+      return best;
+    };
+    const wake = () => {
+      cancelAnimationFrame(raf);
+      ticks = 0;
+      raf = requestAnimationFrame(step);
+    };
+    const onMove = (ev) => {
+      const hit = pick(ev);
+      const id = hit ? hit.id : null;
+      if (id !== hoverRef.current) {
+        hoverRef.current = id;
+        canvas.style.cursor = id ? "pointer" : "default";
+        props.onHover?.(id);
+        wake();
+      }
+    };
+    const onClick = (ev) => {
+      const hit = pick(ev);
+      if (hit) props.onPick?.(hit.id);
+    };
+    canvas.addEventListener("mousemove", onMove);
+    canvas.addEventListener("click", onClick);
+    const onVis = () => {
+      if (document.hidden) cancelAnimationFrame(raf);
+      else wake();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      canvas.removeEventListener("mousemove", onMove);
+      canvas.removeEventListener("click", onClick);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [size, props.nodes, props.links, props.highlight]);
+  const nodeCount = (props.nodes || []).length;
+  return React.createElement(
+    "div",
+    { className: "dshxf-sea", ref: wrapRef },
+    nodeCount === 0 ? React.createElement("div", { className: "dshxf-sea-empty" }, "\u6B63\u5728\u8F7D\u5165\u8BB0\u5FC6\u2026") : null,
+    React.createElement("canvas", {
+      ref: canvasRef,
+      className: "dshxf-sea-canvas",
+      style: { width: "100%", height: size.h + "px" }
+    }),
+    React.createElement(
+      "div",
+      { className: "dshxf-sea-legend" },
+      ["core", "weekly", "recent"].map((k) => React.createElement(
+        "span",
+        { key: k, className: "dshxf-sea-key" },
+        React.createElement("i", { style: { background: LAYER_COLORS[k] } }),
+        k
+      ))
+    )
+  );
+}
 function MemoriesTab({ scope, user }) {
   const roles = Array.isArray(user?.roles) ? user.roles : [];
   const [query, setQuery] = React.useState("");
@@ -348,6 +957,9 @@ function MemoriesTab({ scope, user }) {
   const [rows, setRows] = React.useState([]);
   const [stats, setStats] = React.useState(null);
   const [msg, setMsg] = React.useState("");
+  const [graph, setGraph] = React.useState({ nodes: [], links: [] });
+  const [hoverId, setHoverId] = React.useState(null);
+  const [pickId, setPickId] = React.useState(null);
   const refreshStats = () => {
     callBridge("stats").then((s) => setStats(s)).catch((e) => setMsg("\u7EDF\u8BA1\u5931\u8D25: " + (e?.message ?? e)));
   };
@@ -360,8 +972,43 @@ function MemoriesTab({ scope, user }) {
   };
   React.useEffect(() => {
     refreshStats();
+    callBridge("graph").then((g) => {
+      if (g && Array.isArray(g.nodes)) setGraph({ nodes: g.nodes, links: g.links || [] });
+      else setMsg("\u56FE\u8C31\u6570\u636E\u683C\u5F0F\u5F02\u5E38");
+    }).catch((e) => {
+      setMsg("\u56FE\u8C31\u52A0\u8F7D\u5931\u8D25: " + (e?.message ?? e));
+    });
   }, []);
-  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "dshxf-h" }, "\u8BB0\u5FC6\u56FE\u8C31"), stats && /* @__PURE__ */ React.createElement("div", { className: "dshxf-stats" }, /* @__PURE__ */ React.createElement("span", null, "\u603B\u8BB0\u5FC6 ", /* @__PURE__ */ React.createElement("b", null, stats.total)), /* @__PURE__ */ React.createElement("span", null, "core ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.core ?? 0)), /* @__PURE__ */ React.createElement("span", null, "weekly ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.weekly ?? 0)), /* @__PURE__ */ React.createElement("span", null, "recent ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.recent ?? 0)), /* @__PURE__ */ React.createElement("span", null, "\u68C0\u7D22\u6743\u91CD ", /* @__PURE__ */ React.createElement("b", null, typeof stats.evolution?.retrievalWeight === "number" ? stats.evolution.retrievalWeight.toFixed(2) : "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "dshxf-h" }, "\u8BB0\u5FC6\u56FE\u8C31"), /* @__PURE__ */ React.createElement("div", { className: "dshxf-note" }, graph.nodes.length > 0 ? `${graph.nodes.length} \u4E2A\u8282\u70B9 \xB7 ${graph.links.length} \u6761\u5173\u7CFB` : "\u5C1A\u65E0\u8282\u70B9\u6570\u636E", msg ? ` \xB7 ${msg}` : ""), /* @__PURE__ */ React.createElement(
+    MemorySea,
+    {
+      nodes: graph.nodes,
+      links: graph.links,
+      highlight: hoverId || pickId,
+      onHover: (id) => setHoverId(id),
+      onPick: (id) => setPickId((cur) => cur === id ? null : id)
+    }
+  ), pickId ? React.createElement(
+    "div",
+    { className: "dshxf-sea-pick" },
+    (() => {
+      const n = graph.nodes.find((x) => x.id === pickId);
+      if (!n) return null;
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          "div",
+          { className: "dshxf-mem-meta" },
+          React.createElement("span", { className: "dshxf-tag" }, n.layer),
+          React.createElement("span", { className: "dshxf-tag" }, n.roleId || "global"),
+          React.createElement("span", { className: "dshxf-str" }, "s=" + Number(n.strength).toFixed(2)),
+          React.createElement("span", { className: "dshxf-str" }, n.length + " \u5B57")
+        ),
+        React.createElement("div", { className: "dshxf-mem-body" }, n.excerpt)
+      );
+    })()
+  ) : React.createElement("div", { className: "dshxf-note" }, "\u60AC\u505C\u67E5\u770B\u5173\u7CFB\uFF0C\u70B9\u51FB\u661F\u70B9\u67E5\u770B\u5185\u5BB9"), stats && /* @__PURE__ */ React.createElement("div", { className: "dshxf-stats" }, /* @__PURE__ */ React.createElement("span", null, "\u603B\u8BB0\u5FC6 ", /* @__PURE__ */ React.createElement("b", null, stats.total)), /* @__PURE__ */ React.createElement("span", null, "core ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.core ?? 0)), /* @__PURE__ */ React.createElement("span", null, "weekly ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.weekly ?? 0)), /* @__PURE__ */ React.createElement("span", null, "recent ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.recent ?? 0)), /* @__PURE__ */ React.createElement("span", null, "\u68C0\u7D22\u6743\u91CD ", /* @__PURE__ */ React.createElement("b", null, typeof stats.evolution?.retrievalWeight === "number" ? stats.evolution.retrievalWeight.toFixed(2) : "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "dshxf-in dshxf-grow",

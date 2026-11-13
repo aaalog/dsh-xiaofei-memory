@@ -12,6 +12,28 @@ type Stats = { total: number; byLayer: Record<string, number>; byRole: Record<st
 
 const NS = "dsh-xiaofei-memory";
 
+/** Injected by build.mjs; the fallback covers source-mode runs. */
+const BUILD_STAMP = typeof __DSHXF_BUILD__ === "string" ? __DSHXF_BUILD__ : "dev";
+
+/**
+ * Warn when the page and the running host come from different builds.
+ *
+ * Rebuilding writes new files to disk, but the host module is already in the
+ * Node module cache — only a restart reloads it. Without this check the only
+ * symptom is an "unknown op" error from whichever new op the page calls first.
+ */
+function useBuildMismatch(): { client: string; host: string | null } {
+  const [host, setHost] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    callBridge("build")
+      .then((r) => { if (alive && r && typeof r.build === "string") setHost(r.build); })
+      .catch(() => { if (alive) setHost("unknown"); });
+    return () => { alive = false; };
+  }, []);
+  return { client: BUILD_STAMP, host };
+}
+
 function hostService(ctx: any, name: string): any {
   try {
     const remote = ctx?.remote;
@@ -41,7 +63,10 @@ async function callBridge(op: string, args: any = {}): Promise<any> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const bridge = (globalThis as any).DSHXF_BRIDGE;
   if (bridge && typeof bridge.token === "string") headers["x-dshxf-token"] = bridge.token;
-  const res = await fetch("dshxf/bridge", {
+  // Absolute, not relative: the View also renders on /s/<id>, where a relative
+  // "dshxf/bridge" would resolve to /s/dshxf/bridge and 404. The host mounts the
+  // route at the root, so anchor it there.
+  const res = await fetch("/dshxf/bridge", {
     method: "POST",
     headers,
     body: JSON.stringify({ op, args }),
@@ -62,29 +87,55 @@ export function apply(ctx: any): () => void {
   (window as any).__ctx__ = ctx;
   try { injectCss(); } catch { /* ignore */ }
   probe("apply");
-  let disposeHeader: (() => void) | null = null;
-  // Primary mount: a Settings page section. Mirror meow-memory: obtain a bound
-  // settings scope, or poll the `configForms` service until it is ready.
+
+  // Primary mount: a first-class Conversation View tab, beside 对话/轨迹/上下文.
+  // `conversation.view` is an open list with replaceRisk "none": registering a
+  // fresh id adds a cell instead of shadowing a shipped one.
+  const disposeView = mountConversationView(ctx);
+
+  // Secondary mount: the detailed console in Settings, kept for the write-side
+  // operations (role editing, manual sleep) that do not belong in a read-only
+  // conversation tab.
   const disposeSettings = mountSettings(ctx);
 
-  // Fallback: a header button that opens the console as a floating overlay.
-  try {
-    disposeHeader = ctx.slots.inject("conversation.session.header.actions", () => {
-      try {
-        return ctx.slots.register(
-          { name: "conversation.session.header.actions", id: NS, order: 200 },
-          HeaderButton
-        );
-      } catch (e) {
-        console.warn("[dsh-xiaofei-memory] header slot unavailable:", e);
-        return () => {};
-      }
-    });
-  } catch (e) { console.warn("[dsh-xiaofei-memory] header slot inject failed", e); }
-
   return () => {
-    try { disposeHeader?.(); } catch { /* ignore */ }
+    try { disposeView?.(); } catch { /* ignore */ }
     try { disposeSettings?.(); } catch { /* ignore */ }
+  };
+}
+
+/**
+ * Mount the memory view as a Conversation View tab.
+ *
+ * Ordered after the shipped 对话(0)/轨迹(10) and dsh-context's 上下文(20)/
+ * 编队(30), so it lands at the right edge of the row without disturbing them.
+ */
+function mountConversationView(ctx: any): () => void {
+  let disposeEntry: (() => void) | null = null;
+  let disposeInjection: (() => void) | null = null;
+  const register = () => {
+    try { disposeEntry?.(); } catch { /* ignore */ }
+    try {
+      disposeEntry = ctx.slots.register(
+        {
+          name: "conversation.view",
+          id: NS,
+          order: 40,
+          // A thunk so the label follows the active locale without re-registering.
+          label: () => "记忆引擎",
+        },
+        MemoryView
+      );
+      probe("conversation.view registered");
+    } catch (e) {
+      console.warn("[dsh-xiaofei-memory] conversation.view unavailable:", e);
+    }
+  };
+  try { disposeInjection = ctx.slots.inject("conversation.view", register); }
+  catch (e) { console.warn("[dsh-xiaofei-memory] conversation.view inject failed", e); }
+  return () => {
+    try { disposeInjection?.(); } catch { /* ignore */ }
+    try { disposeEntry?.(); } catch { /* ignore */ }
   };
 }
 
@@ -167,38 +218,131 @@ function probe(msg: string): void {
   } catch { /* ignore */ }
 }
 
-/** Header button that toggles a floating console overlay. */
-function HeaderButton() {
-  const [open, setOpen] = React.useState(false);
-  const ctx = (window as any).__ctx__;
-  const scope = ctx ? getScope(ctx) : undefined;
-  return React.createElement(
-    React.Fragment,
-    null,
-    React.createElement(
-      "button",
-      {
-        className: "dshxf-trigger",
-        title: "小肥鱼记忆引擎",
-        onClick: () => setOpen((v) => !v),
-      },
-      "记忆引擎"
+/**
+ * The 记忆引擎 Conversation View.
+ *
+ * Read-only by design: a conversation tab is for understanding, and every
+ * mutation lives in the Settings console. The always-on block is rendered by
+ * the host from the same selector the prompt section uses, so what is shown
+ * here is exactly what the model receives.
+ */
+function MemoryView(_props: any) {
+  const [core, setCore] = React.useState<any>(null);
+  const [stats, setStats] = React.useState<Stats | null>(null);
+  const [err, setErr] = React.useState("");
+  const [q, setQ] = React.useState("");
+  const [hits, setHits] = React.useState<MemRow[] | null>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    // Load independently: one failing op must not blank the whole view. The
+    // always-on block is the primary content, so a stats failure should only
+    // cost the numbers, not the page.
+    callBridge("core")
+      .then((c) => { if (alive) setCore(c); })
+      .catch((e: any) => { if (alive) setErr(String(e?.message ?? e)); });
+    callBridge("stats")
+      .then((s) => { if (alive) setStats(s); })
+      .catch(() => { /* stats are optional */ });
+    return () => { alive = false; };
+  }, []);
+
+  const search = async () => {
+    if (!q.trim()) { setHits(null); return; }
+    setBusy(true);
+    try { setHits(await callBridge("search", { query: q })); }
+    catch (e: any) { setErr(String(e?.message ?? e)); }
+    finally { setBusy(false); }
+  };
+
+  const layers = stats?.byLayer ?? {};
+  const build = useBuildMismatch();
+  const stale = build.host !== null && build.host !== "unknown" && build.host !== build.client;
+  return React.createElement("div", { className: "dshxf-view" },
+    React.createElement("div", { className: "dshxf-inner" },
+    stale
+      ? React.createElement("div", { className: "dshxf-card dshxf-warn" },
+          React.createElement("b", null, "插件已更新，但运行时仍在用旧版本"),
+          React.createElement("div", { className: "dshxf-note" },
+            `页面构建 ${build.client} · 运行时构建 ${build.host}。请重启 DSH 以加载新的后端模块。`))
+      : null,
+    err
+      ? React.createElement("div", { className: "dshxf-card dshxf-danger" },
+          React.createElement("div", { className: "dshxf-note" }, `数据桥错误：${err}`))
+      : null,
+    // ── always-on block ──────────────────────────────────────────────
+    React.createElement("div", { className: "dshxf-card" },
+      React.createElement("div", { className: "dshxf-card-head" },
+        React.createElement("h3", { className: "dshxf-h" }, "常驻记忆"),
+        React.createElement("span", { className: "dshxf-tag" },
+          core ? `${core.entries?.length ?? 0} 条 · ${core.tokens} tokens` : "加载中…")
+      ),
+      React.createElement("p", { className: "dshxf-note" },
+        "以下内容每轮都会作为系统提示词注入，不依赖检索。段名 ",
+        React.createElement("code", null, core?.section ?? "memory:core"),
+        "，顺序 ",
+        React.createElement("code", null, String(core?.order ?? 10150)),
+        "。"
+      ),
+      React.createElement("pre", { className: "dshxf-pre" }, core?.text || "（暂无常驻记忆）")
     ),
-    open
-      ? React.createElement(
-          "div",
-          {
-            className: "dshxf-overlay",
-            onClick: (e: any) => { if (e.target === e.currentTarget) setOpen(false); },
-          },
-          React.createElement(
-            "div",
-            { className: "dshxf-modal" },
-            React.createElement("button", { className: "dshxf-close", onClick: () => setOpen(false) }, "×"),
-            React.createElement(ConsolePage, { scope })
-          )
-        )
-      : null
+
+    // ── stats ────────────────────────────────────────────────────────
+    React.createElement("div", { className: "dshxf-card" },
+      React.createElement("h3", { className: "dshxf-h" }, "记忆总量"),
+      React.createElement("div", { className: "dshxf-stats" },
+        React.createElement("div", { className: "dshxf-stat" },
+          React.createElement("b", null, String(stats?.total ?? 0)),
+          React.createElement("span", null, "条活跃")),
+        ["core", "weekly", "recent"].map((k) =>
+          React.createElement("div", { className: "dshxf-stat", key: k },
+            React.createElement("b", null, String(layers[k] ?? 0)),
+            React.createElement("span", null, k)))
+      )
+    ),
+
+    // ── full console (roles / graph / sleep / system) ────────────────
+    // Reuses the Settings page component verbatim: one implementation, two
+    // mount points, so the View is never a reduced copy of the real console.
+    React.createElement("div", { className: "dshxf-card" },
+      React.createElement(ConsolePage, { scope: getScope((window as any).__ctx__) })
+    ),
+
+    // ── search ───────────────────────────────────────────────────────
+    React.createElement("div", { className: "dshxf-card" },
+      React.createElement("h3", { className: "dshxf-h" }, "检索预览"),
+      React.createElement("div", { className: "dshxf-row" },
+        React.createElement("input", {
+          className: "dshxf-in dshxf-grow",
+          placeholder: "输入一句话，看会检索到什么…",
+          value: q,
+          onChange: (e: any) => setQ(e.target.value),
+          onKeyDown: (e: any) => { if (e.key === "Enter") void search(); },
+        }),
+        React.createElement("button", {
+          className: "dshxf-btn dshxf-primary",
+          onClick: () => void search(),
+          disabled: busy,
+        }, busy ? "检索中…" : "检索")
+      ),
+      hits === null
+        ? null
+        : React.createElement("div", { className: "dshxf-list" },
+            hits.length === 0
+              ? React.createElement("div", { className: "dshxf-note" }, "无匹配")
+              : hits.map((m) =>
+                  React.createElement("div", { className: "dshxf-mem", key: m.id },
+                    React.createElement("div", { className: "dshxf-mem-meta" },
+                      React.createElement("span", { className: "dshxf-tag" }, m.layer),
+                      React.createElement("span", { className: "dshxf-tag" }, m.roleId),
+                      React.createElement("span", { className: "dshxf-str" }, `s=${Number(m.strength).toFixed(2)}`),
+                      React.createElement("span", { className: "dshxf-str" }, `score=${Number(m.score).toFixed(3)}`)
+                    ),
+                    React.createElement("div", { className: "dshxf-mem-body" }, m.content)
+                  )))
+    )
+    )
   );
 }
 
@@ -334,6 +478,284 @@ function RolesTab({ scope, user }: { scope: any; user: any }) {
 }
 
 // ── Tab 2: Memory graph ────────────────────────────────────────────────────
+/**
+ * MemorySea — a canvas starfield of memories.
+ *
+ * Design constraints, in order:
+ * 1. It must stay readable. A pretty cloud that hides what it means is worse
+ *    than a list, so the list stays below and the canvas is a map, not a table.
+ * 2. It must stay cheap. Canvas 2D, no dependency, a hard node cap, and a
+ *    single rAF loop that stops when the layout settles or the tab is hidden.
+ * 3. It must reflect the engine. Position comes from a small force layout over
+ *    the same entity links `entity_index` produces, so clusters mean what the
+ *    retriever thinks they mean.
+ *
+ * Layer sets the colour; strength sets the radius; a search hit pulses.
+ */
+const LAYER_COLORS: Record<string, string> = {
+  core: "#e8b84b",
+  weekly: "#4fb3d9",
+  recent: "#9b8cd9",
+  diffusion: "#6b7280",
+};
+
+type SeaNode = {
+  id: string; layer: string; strength: number; excerpt: string;
+  entities: string[]; x: number; y: number; vx: number; vy: number;
+};
+type SeaLink = { source: string; target: string; entity: string; weight: number };
+
+function MemorySea(props: {
+  nodes: any[]; links: SeaLink[]; highlight?: string | null;
+  onHover?: (id: string | null) => void; onPick?: (id: string) => void;
+}) {
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const stateRef = React.useRef<{ nodes: SeaNode[]; links: SeaLink[] }>({ nodes: [], links: [] });
+  const hoverRef = React.useRef<string | null>(null);
+  const [size, setSize] = React.useState({ w: 640, h: 300 });
+
+  // Build the simulation nodes once per data change.
+  React.useEffect(() => {
+    const cap = 200;
+    const raw = (props.nodes || []).slice(0, cap);
+    const { w, h } = size;
+    const nodes: SeaNode[] = raw.map((n: any, i: number) => {
+      const a = (i / Math.max(1, raw.length)) * Math.PI * 2;
+      // Seed on a spiral so the first frames already look like a field.
+      const r = Math.min(w, h) * (0.14 + 0.34 * ((i % 7) / 7));
+      return {
+        id: n.id,
+        layer: n.layer || "recent",
+        strength: Number(n.strength) || 1,
+        excerpt: n.excerpt || "",
+        entities: Array.isArray(n.entities) ? n.entities : [],
+        x: w / 2 + Math.cos(a) * r,
+        y: h / 2 + Math.sin(a) * r,
+        vx: 0, vy: 0,
+      };
+    });
+    const known = new Set(nodes.map((n) => n.id));
+    const links = (props.links || [])
+      .filter((l: SeaLink) => known.has(l.source) && known.has(l.target))
+      .slice(0, 900);
+    stateRef.current = { nodes, links };
+  }, [props.nodes, props.links]);
+
+  // Track the wrapper size. Measure once immediately: a tab that mounts while
+  // hidden has zero width, and waiting for a ResizeObserver callback alone can
+  // leave the canvas at its placeholder size forever.
+  React.useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const w = Math.round(r.width);
+      if (w > 0) {
+        setSize((cur) => (cur.w === w ? cur : { w, h: Math.max(240, Math.min(420, Math.round(w * 0.42))) }));
+      }
+    };
+    measure();
+    let ro: any = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(measure);
+      ro.observe(el);
+    }
+    const t = setTimeout(measure, 60);
+    return () => { clearTimeout(t); try { ro?.disconnect(); } catch { /* ignore */ } };
+  }, []);
+
+  // The single animation loop.
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = Math.min(2, (window as any).devicePixelRatio || 1);
+    canvas.width = size.w * dpr;
+    canvas.height = size.h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    let raf = 0;
+    let alive = true;
+    let ticks = 0;
+
+    const step = () => {
+      const { nodes, links } = stateRef.current;
+      const { w, h } = size;
+      const cx = w / 2, cy = h / 2;
+      const index = new Map(nodes.map((n) => [n.id, n]));
+
+      // ── forces ──────────────────────────────────────────────────
+      for (const n of nodes) {
+        n.vx += (cx - n.x) * 0.0012;
+        n.vy += (cy - n.y) * 0.0012;
+      }
+      for (const l of links) {
+        const a = index.get(l.source), b = index.get(l.target);
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const target = 60 + 40 * (1 - Math.min(1, l.weight));
+        const f = ((d - target) / d) * 0.012 * (0.4 + l.weight);
+        const fx = dx * f, fy = dy * f;
+        a.vx += fx; a.vy += fy;
+        b.vx -= fx; b.vy -= fy;
+      }
+      if (nodes.length <= 200) {
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const a = nodes[i], b = nodes[j];
+            let dx = b.x - a.x, dy = b.y - a.y;
+            let d2 = dx * dx + dy * dy;
+            if (d2 < 1) { d2 = 1; dx = 0.5; dy = 0.5; }
+            if (d2 > 40000) continue;
+            const f = 90 / d2;
+            const d = Math.sqrt(d2);
+            a.vx -= (dx / d) * f; a.vy -= (dy / d) * f;
+            b.vx += (dx / d) * f; b.vy += (dy / d) * f;
+          }
+        }
+      }
+      for (const n of nodes) {
+        n.vx *= 0.86; n.vy *= 0.86;
+        n.x += n.vx; n.y += n.vy;
+        const pad = 18;
+        if (n.x < pad) { n.x = pad; n.vx *= -0.4; }
+        if (n.x > w - pad) { n.x = w - pad; n.vx *= -0.4; }
+        if (n.y < pad) { n.y = pad; n.vy *= -0.4; }
+        if (n.y > h - pad) { n.y = h - pad; n.vy *= -0.4; }
+      }
+
+      // ── draw ────────────────────────────────────────────────────
+      ctx.clearRect(0, 0, w, h);
+      const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.6);
+      glow.addColorStop(0, "rgba(80,110,180,0.10)");
+      glow.addColorStop(1, "rgba(80,110,180,0)");
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, w, h);
+
+      const hi = props.highlight || null;
+      const hovered = hoverRef.current;
+
+      for (const l of links) {
+        const a = index.get(l.source), b = index.get(l.target);
+        if (!a || !b) continue;
+        const active = hi ? (a.id === hi || b.id === hi) : false;
+        ctx.strokeStyle = active ? "rgba(120,200,255,0.55)" : "rgba(140,160,200," + (0.05 + 0.12 * l.weight) + ")";
+        ctx.lineWidth = active ? 1.4 : 0.6;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+
+      for (const n of nodes) {
+        const base = LAYER_COLORS[n.layer] || LAYER_COLORS.recent;
+        const r = 2.2 + Math.min(5.5, Math.log2(1 + n.strength) * 1.7);
+        const isHi = hi === n.id;
+        const isHover = hovered === n.id;
+        ctx.globalAlpha = hi && !isHi ? 0.28 : 1;
+
+        const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3.2);
+        g.addColorStop(0, base);
+        g.addColorStop(0.35, base + "88");
+        g.addColorStop(1, base + "00");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r * 3.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = base;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (isHi || isHover) {
+          ctx.strokeStyle = isHi ? "#7fd4ff" : "#ffffff";
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      ticks++;
+      // Settle: once the layout is calm, stop instead of burning frames on a
+      // static picture. Hover or a data change restarts it.
+      const moving = nodes.some((n) => Math.abs(n.vx) + Math.abs(n.vy) > 0.05);
+      if (alive && (moving || ticks < 120)) raf = requestAnimationFrame(step);
+    };
+
+    raf = requestAnimationFrame(step);
+
+    const pick = (ev: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+      let best: SeaNode | null = null;
+      let bestD = 22;
+      for (const n of stateRef.current.nodes) {
+        const d = Math.hypot(n.x - mx, n.y - my);
+        if (d < bestD) { bestD = d; best = n; }
+      }
+      return best;
+    };
+    const wake = () => {
+      cancelAnimationFrame(raf);
+      ticks = 0;
+      raf = requestAnimationFrame(step);
+    };
+    const onMove = (ev: MouseEvent) => {
+      const hit = pick(ev);
+      const id = hit ? hit.id : null;
+      if (id !== hoverRef.current) {
+        hoverRef.current = id;
+        canvas.style.cursor = id ? "pointer" : "default";
+        props.onHover?.(id);
+        wake();
+      }
+    };
+    const onClick = (ev: MouseEvent) => {
+      const hit = pick(ev);
+      if (hit) props.onPick?.(hit.id);
+    };
+    canvas.addEventListener("mousemove", onMove);
+    canvas.addEventListener("click", onClick);
+
+    const onVis = () => {
+      if (document.hidden) cancelAnimationFrame(raf);
+      else wake();
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      canvas.removeEventListener("mousemove", onMove);
+      canvas.removeEventListener("click", onClick);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [size, props.nodes, props.links, props.highlight]);
+
+  const nodeCount = (props.nodes || []).length;
+  return React.createElement("div", { className: "dshxf-sea", ref: wrapRef },
+    nodeCount === 0
+      ? React.createElement("div", { className: "dshxf-sea-empty" }, "正在载入记忆…")
+      : null,
+    React.createElement("canvas", {
+      ref: canvasRef,
+      className: "dshxf-sea-canvas",
+      style: { width: "100%", height: size.h + "px" },
+    }),
+    React.createElement("div", { className: "dshxf-sea-legend" },
+      ["core", "weekly", "recent"].map((k) =>
+        React.createElement("span", { key: k, className: "dshxf-sea-key" },
+          React.createElement("i", { style: { background: LAYER_COLORS[k] } }), k))
+    )
+  );
+}
+
 function MemoriesTab({ scope, user }: { scope: any; user: any }) {
   const roles: Role[] = Array.isArray(user?.roles) ? user.roles : [];
   const [query, setQuery] = React.useState("");
@@ -341,6 +763,9 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
   const [rows, setRows] = React.useState<MemRow[]>([]);
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [msg, setMsg] = React.useState("");
+  const [graph, setGraph] = React.useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+  const [hoverId, setHoverId] = React.useState<string | null>(null);
+  const [pickId, setPickId] = React.useState<string | null>(null);
 
   const refreshStats = () => {
     callBridge("stats")
@@ -356,11 +781,50 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
       })
       .catch((e: any) => setMsg("检索失败: " + (e?.message ?? e)));
   };
-  React.useEffect(() => { refreshStats(); }, []);
+  React.useEffect(() => {
+    refreshStats();
+    // The sea needs every active memory, not just a query's hits.
+    callBridge("graph")
+      .then((g) => {
+        if (g && Array.isArray(g.nodes)) setGraph({ nodes: g.nodes, links: g.links || [] });
+        else setMsg("图谱数据格式异常");
+      })
+      .catch((e: any) => { setMsg("图谱加载失败: " + (e?.message ?? e)); });
+  }, []);
 
   return (
     <div>
       <h3 className="dshxf-h">记忆图谱</h3>
+      <div className="dshxf-note">
+        {graph.nodes.length > 0
+          ? `${graph.nodes.length} 个节点 · ${graph.links.length} 条关系`
+          : "尚无节点数据"}
+        {msg ? ` · ${msg}` : ""}
+      </div>
+      <MemorySea
+        nodes={graph.nodes}
+        links={graph.links}
+        highlight={hoverId || pickId}
+        onHover={(id) => setHoverId(id)}
+        onPick={(id) => setPickId((cur) => (cur === id ? null : id))}
+      />
+      {pickId
+        ? React.createElement("div", { className: "dshxf-sea-pick" },
+            (() => {
+              const n = graph.nodes.find((x) => x.id === pickId);
+              if (!n) return null;
+              return React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "dshxf-mem-meta" },
+                  React.createElement("span", { className: "dshxf-tag" }, n.layer),
+                  React.createElement("span", { className: "dshxf-tag" }, n.roleId || "global"),
+                  React.createElement("span", { className: "dshxf-str" }, "s=" + Number(n.strength).toFixed(2)),
+                  React.createElement("span", { className: "dshxf-str" }, n.length + " 字")
+                ),
+                React.createElement("div", { className: "dshxf-mem-body" }, n.excerpt)
+              );
+            })()
+          )
+        : React.createElement("div", { className: "dshxf-note" }, "悬停查看关系，点击星点查看内容")}
       {stats && (
         <div className="dshxf-stats">
           <span>总记忆 <b>{stats.total}</b></span>

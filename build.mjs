@@ -10,6 +10,13 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(root, "dist");
 const clientDir = path.join(dist, "client");
 
+// Build stamp: injected into BOTH bundles so the client can tell whether the
+// host it is talking to came from the same build. A stale host module stays in
+// the Node module cache until the process restarts, so "I rebuilt but the UI
+// still errors" is a real and confusing state; this makes it visible instead.
+const BUILD_STAMP = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+const DEFINE = { __DSHXF_BUILD__: JSON.stringify(BUILD_STAMP) };
+
 // 1. Clean
 fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(clientDir, { recursive: true });
@@ -23,10 +30,11 @@ await build({
   target: "node22",
   external: ["node:*", "@deepseek-ai/*", "react"],
   outfile: path.join(dist, "index.js"),
+  define: DEFINE,
   logLevel: "info",
   sourcemap: false,
 });
-console.log("backend: dist/index.js");
+console.log("backend: dist/index.js (build " + BUILD_STAMP + ")");
 
 // 3. Frontend bundle (DSH module-loader format; CSS inlined as text)
 const tmp = path.join(dist, ".client.cjs.js");
@@ -40,6 +48,7 @@ await build({
   loader: { ".css": "text" },
   external: ["react"],
   outfile: tmp,
+  define: DEFINE,
   minify: false,
   sourcemap: false,
   logLevel: "info",

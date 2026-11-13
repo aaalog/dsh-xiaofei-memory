@@ -65,6 +65,13 @@ try {
 } catch (e) {
   console.log("apply threw:", e.message);
 }
+ok(slotsInjected.some((s) => s.slot === "conversation.view"), "injects conversation.view slot");
+const viewReg = slotsRegistered.find((r) => r.def.name === "conversation.view");
+ok(!!viewReg, "registers the conversation.view tab");
+ok(viewReg && viewReg.def.id === "dsh-xiaofei-memory", "view id is the plugin namespace");
+ok(viewReg && viewReg.def.order === 40, "view sits after context(20)/fleet(30)");
+ok(viewReg && typeof viewReg.def.label === "function" && viewReg.def.label() === "记忆引擎", "label is a thunk reading 记忆引擎");
+ok(!slotsInjected.some((s) => s.slot === "conversation.session.header.actions"), "header button removed");
 ok(slotsInjected.some((s) => s.slot === "settings.section"), "injects settings.section slot");
 ok(slotsRegistered.some((r) => r.def.name === "settings.section"), "registers via injected slot");
 ok(typeof disposer === "function", "apply returns disposer");
