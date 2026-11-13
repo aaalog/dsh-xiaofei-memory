@@ -2,25 +2,47 @@
 // PRD section 4.3: distill over-densified recent memories into core summaries,
 // archive the originals, then VACUUM + FTS optimize to reclaim space.
 
-import { addMemory, listLayerMemories, listRecentByEntity, archiveMemory, vacuumAndOptimize, purgeArchived } from "./db.js";
-import { normalizeContent, extractEntities, tokenEstimate } from "./util.js";
+import { addMemory, listLayerMemories, listRecentByEntity, archiveMemory, vacuumAndOptimize, purgeArchived, isSeedMemoryId } from "./db.js";
+import { normalizeContent, extractEntities, tokenEstimate, isMeaningfulEntity } from "./util.js";
 
-const DISTILL_THRESHOLD = 10; // >10 same-entity recent memories triggers distillation
+// A fixed threshold of 10 never fires: real stores hold a handful of memories
+// per entity, so the nightly pass only ever vacuumed. The effective threshold is
+// proportional to how much is actually in the layer, clamped to a sane range.
+const DISTILL_MIN_THRESHOLD = 3;
+const DISTILL_RATIO = 0.15;
+const DISTILL_MAX_THRESHOLD = 10;
 const SUMMARY_MAX_CHARS = 100;
+
+/**
+ * Effective distill threshold for a layer of `size` active memories.
+ * Small layers distill eagerly; large ones keep the original ceiling.
+ */
+export function distillThreshold(size) {
+  const scaled = Math.ceil(size * DISTILL_RATIO);
+  return Math.min(DISTILL_MAX_THRESHOLD, Math.max(DISTILL_MIN_THRESHOLD, scaled || DISTILL_MIN_THRESHOLD));
+}
 
 /**
  * Run one nightly sleep pass. Returns a stats object.
  * `summarize` is an optional async (texts[]) => string | null LLM hook;
  * falls back to a deterministic heuristic when absent.
  */
-export async function runNightlySleep(db, { summarize, layer = "recent" } = {}) {
-  const stats = { distilledGroups: 0, distilledMemories: 0, archived: 0, vacuumed: false };
+export async function runNightlySleep(db, { summarize, layer = "recent", logger } = {}) {
+  const stats = {
+    distilledGroups: 0, distilledMemories: 0, archived: 0, vacuumed: false,
+    threshold: 0, scanned: 0, skippedEntities: 0, details: [],
+  };
 
-  // Group recent memories by shared entity.
+  // Group recent memories by shared entity, ignoring noise entities.
   const groups = new Map(); // entity -> memories[]
   const all = listLayerMemories(db, layer);
+  stats.scanned = all.length;
+  const threshold = distillThreshold(all.length);
+  stats.threshold = threshold;
+
   for (const m of all) {
     for (const e of m.entities ?? []) {
+      if (!isMeaningfulEntity(e)) continue;
       if (!groups.has(e)) groups.set(e, []);
       const arr = groups.get(e);
       if (arr.length <= 40) arr.push(m);
@@ -29,7 +51,7 @@ export async function runNightlySleep(db, { summarize, layer = "recent" } = {}) 
 
   for (const [entity, memories] of groups) {
     const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values());
-    if (unique.length <= DISTILL_THRESHOLD) continue;
+    if (unique.length <= threshold) { stats.skippedEntities++; continue; }
     const ids = unique.map((m) => m.id);
     // Build a distilled summary into core, then archive the originals.
     const texts = unique
@@ -51,10 +73,24 @@ export async function runNightlySleep(db, { summarize, layer = "recent" } = {}) 
       originIds: ids,
       strength: 1.0,
     });
-    for (const id of ids) archiveMemory(db, id);
+    for (const id of ids) {
+      // Never distil away the seeded soul memories.
+      if (isSeedMemoryId(id)) continue;
+      archiveMemory(db, id);
+      stats.archived++;
+    }
     stats.distilledGroups++;
     stats.distilledMemories += ids.length;
-    stats.archived += ids.length;
+    stats.details.push({
+      entity,
+      count: ids.length,
+      summary: content.slice(0, SUMMARY_MAX_CHARS),
+      newId: res?.id ?? null,
+      merged: res?.merged ?? false,
+    });
+    logger?.info?.(
+      `runtime-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
+    );
   }
 
   // Reclaim physical space for archived/soft-deleted rows.
@@ -71,4 +107,4 @@ function heuristicSummary(texts) {
   return chars.slice(0, SUMMARY_MAX_CHARS).join("") + "…";
 }
 
-export { DISTILL_THRESHOLD, SUMMARY_MAX_CHARS };
+export { DISTILL_MIN_THRESHOLD, DISTILL_RATIO, DISTILL_MAX_THRESHOLD, SUMMARY_MAX_CHARS };

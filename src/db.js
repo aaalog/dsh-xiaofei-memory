@@ -176,8 +176,12 @@ export function addMemory(db, { roleId = "global", layer = "recent", content, en
       return { id: c.id, merged: true };
     }
     if (sim >= 0.75) {
-      // conflicting fact: archive the older, write the new one.
-      db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(c.id);
+      // Conflicting fact: archive the older, write the new one. Seeded soul
+      // memories are exempt: they are identity, not facts to be superseded,
+      // and archiving them would let nightly purge destroy them for good.
+      if (!isSeedMemoryId(c.id)) {
+        db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(c.id);
+      }
       break;
     }
   }
@@ -372,9 +376,28 @@ export function vacuumAndOptimize(db) {
   db.exec("VACUUM");
 }
 
-/** Purge archived memories physically (after distillation). */
+/** The ten seeded "soul" memories. Guarded against permanent loss. */
+const SEED_ID_PATTERN = "mem_0[0-9][0-9]";
+
+/**
+ * Purge archived memories physically (after distillation).
+ *
+ * The seeded soul memories are resurrected first, never deleted. They are the
+ * agent's identity baseline and there is no way back: `seedIfEmpty` only seeds
+ * when the *whole table* is empty, so a deleted seed row can never be restored
+ * automatically. This guards every path that can archive a row (nightly sleep,
+ * and the conflict pass in addMemory) without needing to trust those callers.
+ */
 export function purgeArchived(db) {
-  db.prepare("DELETE FROM memories WHERE status = 'archived'").run();
+  db.prepare(
+    `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
+  ).run();
+  db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+}
+
+/** True when the id belongs to the protected seeded soul memories. */
+export function isSeedMemoryId(id) {
+  return typeof id === "string" && /^mem_0\d\d$/.test(id);
 }
 
 function escapeLike(s) {

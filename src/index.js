@@ -16,6 +16,7 @@ import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
 import { loadEvolution, runEvolution } from "./evolution.js";
 import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories } from "./console.js";
+import { registerCoreMemory } from "./core-memory.js";
 
 export const name = "dsh-xiaofei-memory";
 
@@ -47,6 +48,14 @@ export const Config = z.object({
   roleId: z.string().default("global"),
   /** Tools whose execution counts as a correction signal (default none = opt-in). */
   correctionTools: z.array(z.string()).default([]),
+  /** Always-on core memory: register a stable subset of core memories in the system prompt. */
+  enableCoreMemory: z.boolean().default(true),
+  /** Token budget for the always-on section (kept small: it is paid on every request). */
+  coreMemoryMaxTokens: z.number().default(650),
+  /** Per-item character cap for an always-on memory. */
+  coreMemoryMaxItemChars: z.number().default(300),
+  /** Minimum strength for a memory to be promoted to always-on. */
+  coreMemoryMinStrength: z.number().default(1.0),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
   /** Role registry for the management console. Volatile = editable in the console. */
@@ -180,6 +189,29 @@ export async function apply(ctx, config) {
     });
   }
 
+  // --- Always-on core memory (memory blocks) ----------------------------
+  // Registered before the nightly-sleep block so the section exists from the
+  // first step of every agent. Failures here must never stop the plugin.
+  const disposeCoreMemory = await (async () => {
+    if (!config.enableCoreMemory) return async () => {};
+    try {
+      return registerCoreMemory({
+        ctx,
+        db,
+        config,
+        // Role isolation: an agent's own roleId plus the shared global namespace.
+        resolveRoleIds: (agent) => {
+          const roleId = agent?.session?.header?.roleId ?? config.roleId;
+          return roleId && roleId !== "global" ? [roleId, "global"] : ["global"];
+        },
+        logger,
+      });
+    } catch (e) {
+      logger?.warn?.(`runtime-xiaofei-memory: core memory disabled after error: ${e?.message ?? e}`);
+      return async () => {};
+    }
+  })();
+
   // --- Nightly sleep (PRD 4.3 + 4.4) ------------------------------------
   let sleepTimer = null;
   const scheduleSleep = () => {
@@ -200,7 +232,7 @@ export async function apply(ctx, config) {
       const summarize = config.useLlmExtraction
         ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel)
         : null;
-      const stats = await runNightlySleep(db, { summarize });
+      const stats = await runNightlySleep(db, { summarize, logger });
       const recallStats = JSON.parse(metaGet(db, RECALL_STATS_KEY) ?? '{"count":0,"corrections":0}');
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
@@ -521,6 +553,9 @@ export async function apply(ctx, config) {
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
     if (typeof disposeAddFact === "function") disposeAddFact();
+    // Unregister per-agent prompt sections before the database goes away, so a
+    // late render can never touch a closed handle.
+    try { void disposeCoreMemory?.(); } catch { /* already disposed */ }
     closeMemoryDb(db);
   });
 }

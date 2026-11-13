@@ -95,6 +95,53 @@ export function extractEntities(text) {
 }
 
 /** Clamp a value into [min, max]. */
+/**
+ * Entities that carry no grouping signal.
+ *
+ * extractEntities() slides a window over Han runs and also captures Latin
+ * terms, so ordinary prose yields tokens like "Time", "Browser", "Asia" or
+ * "目前" alongside real entities. Grouping distillation by those would merge
+ * unrelated memories, so they are filtered before grouping.
+ *
+ * Deliberately conservative: only well-known calendar/locale/time words and
+ * pure boilerplate are dropped. Identifiers such as "runtime-xiaofei-memory"
+ * or "SQLite" are meaningful and are kept.
+ */
+const NOISE_ENTITIES = new Set([
+  // calendar / clock
+  "time", "date", "day", "today", "tomorrow", "yesterday", "now", "utc", "gmt",
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+  "january", "february", "march", "april", "may", "june", "july", "august",
+  "september", "october", "november", "december",
+  "am", "pm", "week", "month", "year", "hour", "minute", "second",
+  // client / platform boilerplate
+  "browser", "user", "agent", "system", "message", "messages", "ok", "error",
+  "http", "https", "html", "json", "true", "false", "null", "undefined",
+  // timezone / region noise seen in this store
+  "asia", "shanghai", "china", "beijing", "utf", "browser time zone",
+  // common CJK filler captured by the 2-4 char window
+  "目前", "然后", "这个", "那个", "可以", "需要", "如果", "因为", "所以",
+  "这样", "那样", "我们", "你们", "他们", "什么", "怎么", "还有", "已经",
+]);
+
+/**
+ * Whether an extracted entity is worth grouping by.
+ *
+ * @param {unknown} entity
+ * @returns {boolean}
+ */
+export function isMeaningfulEntity(entity) {
+  if (typeof entity !== "string") return false;
+  const t = entity.trim().toLowerCase();
+  if (t.length < 2) return false;
+  if (NOISE_ENTITIES.has(t)) return false;
+  // Reject pure punctuation / digits / separators.
+  if (!/[\p{L}\p{N}]/u.test(t)) return false;
+  // Bare 2-char Latin tokens are almost always fragments ("in", "of", "to").
+  if (/^[a-z]{1,2}$/.test(t)) return false;
+  return true;
+}
+
 export function clamp(v, min, max) {
   return Math.min(max, Math.max(min, v));
 }

@@ -6,3 +6,6 @@ node_modules/
 
 # DSH internal session data (meow-memory DB)
 .dsh-meow/
+
+# Local rollback snapshots (db backups, dist copies). Never commit.
+.backup/

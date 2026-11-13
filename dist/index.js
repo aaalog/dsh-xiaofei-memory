@@ -70,6 +70,97 @@ function extractEntities(text) {
   }
   return Array.from(set).slice(0, 16);
 }
+var NOISE_ENTITIES = /* @__PURE__ */ new Set([
+  // calendar / clock
+  "time",
+  "date",
+  "day",
+  "today",
+  "tomorrow",
+  "yesterday",
+  "now",
+  "utc",
+  "gmt",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+  "am",
+  "pm",
+  "week",
+  "month",
+  "year",
+  "hour",
+  "minute",
+  "second",
+  // client / platform boilerplate
+  "browser",
+  "user",
+  "agent",
+  "system",
+  "message",
+  "messages",
+  "ok",
+  "error",
+  "http",
+  "https",
+  "html",
+  "json",
+  "true",
+  "false",
+  "null",
+  "undefined",
+  // timezone / region noise seen in this store
+  "asia",
+  "shanghai",
+  "china",
+  "beijing",
+  "utf",
+  "browser time zone",
+  // common CJK filler captured by the 2-4 char window
+  "\u76EE\u524D",
+  "\u7136\u540E",
+  "\u8FD9\u4E2A",
+  "\u90A3\u4E2A",
+  "\u53EF\u4EE5",
+  "\u9700\u8981",
+  "\u5982\u679C",
+  "\u56E0\u4E3A",
+  "\u6240\u4EE5",
+  "\u8FD9\u6837",
+  "\u90A3\u6837",
+  "\u6211\u4EEC",
+  "\u4F60\u4EEC",
+  "\u4ED6\u4EEC",
+  "\u4EC0\u4E48",
+  "\u600E\u4E48",
+  "\u8FD8\u6709",
+  "\u5DF2\u7ECF"
+]);
+function isMeaningfulEntity(entity) {
+  if (typeof entity !== "string") return false;
+  const t = entity.trim().toLowerCase();
+  if (t.length < 2) return false;
+  if (NOISE_ENTITIES.has(t)) return false;
+  if (!/[\p{L}\p{N}]/u.test(t)) return false;
+  if (/^[a-z]{1,2}$/.test(t)) return false;
+  return true;
+}
 function clamp(v, min, max) {
   return Math.min(max, Math.max(min, v));
 }
@@ -281,7 +372,9 @@ function addMemory(db, { roleId = "global", layer = "recent", content, entities 
       return { id: c.id, merged: true };
     }
     if (sim >= 0.75) {
-      db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(c.id);
+      if (!isSeedMemoryId(c.id)) {
+        db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(c.id);
+      }
       break;
     }
   }
@@ -426,8 +519,15 @@ function vacuumAndOptimize(db) {
   db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('optimize')");
   db.exec("VACUUM");
 }
+var SEED_ID_PATTERN = "mem_0[0-9][0-9]";
 function purgeArchived(db) {
-  db.prepare("DELETE FROM memories WHERE status = 'archived'").run();
+  db.prepare(
+    `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
+  ).run();
+  db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+}
+function isSeedMemoryId(id) {
+  return typeof id === "string" && /^mem_0\d\d$/.test(id);
 }
 function escapeLike(s) {
   return s.replace(/[\\%_]/g, (c) => "\\" + c);
@@ -676,14 +776,33 @@ var FeedbackManager = class {
 };
 
 // src/sleep.js
-var DISTILL_THRESHOLD = 10;
+var DISTILL_MIN_THRESHOLD = 3;
+var DISTILL_RATIO = 0.15;
+var DISTILL_MAX_THRESHOLD = 10;
 var SUMMARY_MAX_CHARS = 100;
-async function runNightlySleep(db, { summarize, layer = "recent" } = {}) {
-  const stats = { distilledGroups: 0, distilledMemories: 0, archived: 0, vacuumed: false };
+function distillThreshold(size) {
+  const scaled = Math.ceil(size * DISTILL_RATIO);
+  return Math.min(DISTILL_MAX_THRESHOLD, Math.max(DISTILL_MIN_THRESHOLD, scaled || DISTILL_MIN_THRESHOLD));
+}
+async function runNightlySleep(db, { summarize, layer = "recent", logger } = {}) {
+  const stats = {
+    distilledGroups: 0,
+    distilledMemories: 0,
+    archived: 0,
+    vacuumed: false,
+    threshold: 0,
+    scanned: 0,
+    skippedEntities: 0,
+    details: []
+  };
   const groups = /* @__PURE__ */ new Map();
   const all = listLayerMemories(db, layer);
+  stats.scanned = all.length;
+  const threshold = distillThreshold(all.length);
+  stats.threshold = threshold;
   for (const m of all) {
     for (const e of m.entities ?? []) {
+      if (!isMeaningfulEntity(e)) continue;
       if (!groups.has(e)) groups.set(e, []);
       const arr = groups.get(e);
       if (arr.length <= 40) arr.push(m);
@@ -691,7 +810,10 @@ async function runNightlySleep(db, { summarize, layer = "recent" } = {}) {
   }
   for (const [entity, memories] of groups) {
     const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values());
-    if (unique.length <= DISTILL_THRESHOLD) continue;
+    if (unique.length <= threshold) {
+      stats.skippedEntities++;
+      continue;
+    }
     const ids = unique.map((m) => m.id);
     const texts = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0)).slice(0, 8).map((m) => m.content);
     let summary = null;
@@ -711,10 +833,23 @@ async function runNightlySleep(db, { summarize, layer = "recent" } = {}) {
       originIds: ids,
       strength: 1
     });
-    for (const id of ids) archiveMemory(db, id);
+    for (const id of ids) {
+      if (isSeedMemoryId(id)) continue;
+      archiveMemory(db, id);
+      stats.archived++;
+    }
     stats.distilledGroups++;
     stats.distilledMemories += ids.length;
-    stats.archived += ids.length;
+    stats.details.push({
+      entity,
+      count: ids.length,
+      summary: content.slice(0, SUMMARY_MAX_CHARS),
+      newId: res?.id ?? null,
+      merged: res?.merged ?? false
+    });
+    logger?.info?.(
+      `runtime-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
+    );
   }
   purgeArchived(db);
   vacuumAndOptimize(db);
@@ -804,8 +939,8 @@ function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
     limit: 8
   });
 }
-async function triggerNightlySleep(db, { summarize } = {}) {
-  const stats = await runNightlySleep(db, { summarize });
+async function triggerNightlySleep(db, { summarize, logger } = {}) {
+  const stats = await runNightlySleep(db, { summarize, logger });
   metaSet(db, "meta.lastManualSleep", Date.now());
   return stats;
 }
@@ -814,6 +949,208 @@ function listSoulMemories(db) {
     "SELECT id, role_id, layer, content FROM memories WHERE id LIKE 'mem_%' ORDER BY id ASC LIMIT 10"
   ).all();
   return rows;
+}
+
+// src/core-memory.js
+var INJECTED_MARKER = "<memory-recall>";
+var DEFAULT_HEADER = "## \u5E38\u9A7B\u8BB0\u5FC6\n\u4EE5\u4E0B\u662F\u65E0\u9700\u68C0\u7D22\u3001\u59CB\u7EC8\u5728\u573A\u7684\u957F\u671F\u8BB0\u5FC6\u3002\u5B83\u4EEC\u662F\u80CC\u666F\u4E8B\u5B9E\uFF0C\u4E0D\u8981\u9010\u6761\u590D\u8FF0\u3002";
+var BUDGET_SAFETY_TOKENS = 8;
+function selectCoreMemories(db, {
+  roleIds = ["global"],
+  maxTokens = 700,
+  maxItemChars = 400,
+  minStrength = 1,
+  limit = 12
+} = {}) {
+  if (!db) return [];
+  const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : ["global"];
+  const placeholders = roles.map(() => "?").join(",");
+  let rows;
+  try {
+    rows = db.prepare(
+      `SELECT id, content, strength, created_at FROM memories
+       WHERE status = 'active' AND layer = 'core'
+         AND role_id IN (${placeholders})
+         AND strength >= ?
+       ORDER BY strength DESC, created_at DESC, id ASC
+       LIMIT ?`
+    ).all(...roles, Number(minStrength) || 0, Math.max(1, Number(limit) || 12));
+  } catch {
+    return [];
+  }
+  const budget = Math.max(0, (Number(maxTokens) || 0) - BUDGET_SAFETY_TOKENS);
+  const chosen = [];
+  let used = 0;
+  for (const row of rows) {
+    const raw = typeof row.content === "string" ? row.content.trim() : "";
+    if (!raw) continue;
+    if (raw.includes(INJECTED_MARKER)) continue;
+    const cap = Math.max(1, Number(maxItemChars) || 400);
+    const content = raw.length > cap ? `${raw.slice(0, cap)}\u2026` : raw;
+    const cost = tokenEstimate(content);
+    if (cost <= 0) continue;
+    if (used + cost > budget) continue;
+    chosen.push({ id: row.id, content, strength: Number(row.strength) || 0 });
+    used += cost;
+    if (chosen.length >= Math.max(1, Number(limit) || 12)) break;
+  }
+  return chosen;
+}
+function renderCoreMemory(entries, { header = DEFAULT_HEADER } = {}) {
+  if (!Array.isArray(entries) || entries.length === 0) return "";
+  const lines = entries.map((e) => `- ${e.content}`);
+  return `${header}
+${lines.join("\n")}`;
+}
+function coreMemorySignature(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return "";
+  return entries.map((e) => `${e.id}:${e.content.length}`).join("|");
+}
+var CoreMemoryCache = class {
+  constructor() {
+    this.signature = null;
+    this.text = "";
+  }
+  /**
+   * @param {Array} entries - current selection
+   * @param {object} [options] - forwarded to renderCoreMemory
+   * @returns {string} stable text for this slice
+   */
+  update(entries, options) {
+    const signature = coreMemorySignature(entries);
+    if (signature === this.signature) return this.text;
+    const next = renderCoreMemory(entries, options);
+    this.signature = signature;
+    this.text = next;
+    return next;
+  }
+  /** Drop the cached text (used on dispose). */
+  reset() {
+    this.signature = null;
+    this.text = "";
+  }
+};
+var CORE_MEMORY_SECTION_NAME = "memory:core";
+var CORE_MEMORY_SECTION_ORDER = 10150;
+async function installCoreMemoryForAgent(agent, { db, config, resolveRoleIds, logger }) {
+  if (!agent || !agent.ctx || typeof agent.ctx.inject !== "function") return null;
+  let cache = new CoreMemoryCache();
+  let disposed = false;
+  const text = () => {
+    if (disposed) return "";
+    try {
+      const roleIds = typeof resolveRoleIds === "function" ? resolveRoleIds(agent) : ["global"];
+      const entries = selectCoreMemories(db, {
+        roleIds,
+        maxTokens: config.coreMemoryMaxTokens,
+        maxItemChars: config.coreMemoryMaxItemChars,
+        minStrength: config.coreMemoryMinStrength
+      });
+      return cache.update(entries);
+    } catch (e) {
+      logger?.warn?.(`runtime-xiaofei-memory: core memory render failed: ${e?.message ?? e}`);
+      return "";
+    }
+  };
+  let fiber;
+  try {
+    fiber = agent.ctx.inject(["systemPrompt"], (scope) => {
+      scope.systemPrompt.section({
+        name: CORE_MEMORY_SECTION_NAME,
+        order: CORE_MEMORY_SECTION_ORDER,
+        // Render text verbatim: memory content may legitimately contain {{...}}.
+        interpolate: false,
+        text
+      });
+    });
+  } catch (e) {
+    logger?.warn?.(`runtime-xiaofei-memory: core memory install failed: ${e?.message ?? e}`);
+    return null;
+  }
+  return {
+    async dispose() {
+      disposed = true;
+      cache.reset();
+      try {
+        await fiber?.dispose?.();
+      } catch {
+      }
+    }
+  };
+}
+function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) {
+  const noop = async () => {
+  };
+  const fibers = /* @__PURE__ */ new Map();
+  const pending = /* @__PURE__ */ new Set();
+  const gone = /* @__PURE__ */ new Set();
+  const installing = /* @__PURE__ */ new Set();
+  const install = async (agent) => {
+    if (!agent) return;
+    if (fibers.has(agent) || installing.has(agent)) return;
+    installing.add(agent);
+    try {
+      const handle = await installCoreMemoryForAgent(agent, { db, config, resolveRoleIds, logger });
+      if (!handle) return;
+      if (gone.has(agent)) {
+        gone.delete(agent);
+        await handle.dispose();
+        return;
+      }
+      fibers.set(agent, handle);
+    } finally {
+      installing.delete(agent);
+    }
+  };
+  const disposeAgent = (agent) => {
+    const handle = fibers.get(agent);
+    if (handle === void 0) {
+      if (installing.has(agent)) gone.add(agent);
+      return;
+    }
+    fibers.delete(agent);
+    const task = handle.dispose().catch((e) => {
+      logger?.warn?.(`runtime-xiaofei-memory: core memory cleanup failed: ${e?.message ?? e}`);
+    });
+    pending.add(task);
+    task.finally(() => pending.delete(task));
+  };
+  try {
+    const agents = typeof ctx.get === "function" ? ctx.get("agents") : void 0;
+    if (agents && typeof agents.list === "function") {
+      for (const agent of agents.list()) {
+        void install(agent).catch((e) => {
+          logger?.warn?.(`runtime-xiaofei-memory: core memory adopt skipped: ${e?.message ?? e}`);
+        });
+      }
+    }
+    ctx.on("agent/created", async ({ agent }) => {
+      try {
+        await install(agent);
+      } catch (e) {
+        logger?.warn?.(`runtime-xiaofei-memory: core memory install skipped: ${e?.message ?? e}`);
+      }
+    });
+    ctx.on("agent/disposed", ({ agent }) => {
+      try {
+        disposeAgent(agent);
+      } catch (e) {
+        logger?.warn?.(`runtime-xiaofei-memory: core memory dispose skipped: ${e?.message ?? e}`);
+      }
+    });
+  } catch (e) {
+    logger?.warn?.(`runtime-xiaofei-memory: core memory lifecycle wiring failed: ${e?.message ?? e}`);
+    return noop;
+  }
+  return async () => {
+    const handles = [...fibers.values()];
+    fibers.clear();
+    await Promise.all([
+      ...handles.map((h) => h.dispose().catch(() => {
+      })),
+      ...pending
+    ]);
+  };
 }
 
 // src/index.js
@@ -842,6 +1179,14 @@ var Config = z.object({
   roleId: z.string().default("global"),
   /** Tools whose execution counts as a correction signal (default none = opt-in). */
   correctionTools: z.array(z.string()).default([]),
+  /** Always-on core memory: register a stable subset of core memories in the system prompt. */
+  enableCoreMemory: z.boolean().default(true),
+  /** Token budget for the always-on section (kept small: it is paid on every request). */
+  coreMemoryMaxTokens: z.number().default(650),
+  /** Per-item character cap for an always-on memory. */
+  coreMemoryMaxItemChars: z.number().default(300),
+  /** Minimum strength for a memory to be promoted to always-on. */
+  coreMemoryMinStrength: z.number().default(1),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
   /** Role registry for the management console. Volatile = editable in the console. */
@@ -952,6 +1297,27 @@ async function apply(ctx, config) {
       }
     });
   }
+  const disposeCoreMemory = await (async () => {
+    if (!config.enableCoreMemory) return async () => {
+    };
+    try {
+      return registerCoreMemory({
+        ctx,
+        db,
+        config,
+        // Role isolation: an agent's own roleId plus the shared global namespace.
+        resolveRoleIds: (agent) => {
+          const roleId = agent?.session?.header?.roleId ?? config.roleId;
+          return roleId && roleId !== "global" ? [roleId, "global"] : ["global"];
+        },
+        logger
+      });
+    } catch (e) {
+      logger?.warn?.(`runtime-xiaofei-memory: core memory disabled after error: ${e?.message ?? e}`);
+      return async () => {
+      };
+    }
+  })();
   let sleepTimer = null;
   const scheduleSleep = () => {
     if (sleepTimer) clearTimeout(sleepTimer);
@@ -968,7 +1334,7 @@ async function apply(ctx, config) {
   const doSleep = async () => {
     try {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-      const stats = await runNightlySleep(db, { summarize });
+      const stats = await runNightlySleep(db, { summarize, logger });
       const recallStats = JSON.parse(metaGet(db, RECALL_STATS_KEY) ?? '{"count":0,"corrections":0}');
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
@@ -1306,6 +1672,10 @@ async function apply(ctx, config) {
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
     if (typeof disposeAddFact === "function") disposeAddFact();
+    try {
+      void disposeCoreMemory?.();
+    } catch {
+    }
     closeMemoryDb(db);
   });
 }
