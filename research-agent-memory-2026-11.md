@@ -258,7 +258,7 @@ HippoRAG 1 的致命伤：**在基础事实题上反而不如朴素 RAG**（图�
 
 结果：联想记忆 **+7%** 超 SOTA embedding，且事实性与 sense-making 不退化。**ICML 2025。**
 
-### 6.4 对照：本仓库插件（runtime-xiaofei-memory）的「数字海马体」
+### 6.4 对照：本仓库插件（dsh-xiaofei-memory）的「数字海马体」
 
 该插件在 [README.md](README.md) 第 3 行自称「底层的『数字海马体』」。实测其实现（[src/retrieval.js](src/retrieval.js)）：
 

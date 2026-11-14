@@ -22,13 +22,13 @@ const NON_CAPTURABLE_PREFIXES = [
 ];
 
 /** Sources this plugin injects; their kind never starts with "memory". */
-const OWN_SOURCE_KINDS = new Set(["runtime-xiaofei-memory"]);
+const OWN_SOURCE_KINDS = new Set(["dsh-xiaofei-memory"]);
 
 /**
  * Whether a message must not be captured as a memory.
  *
  * Two distinct leaks showed up in practice:
- * 1. Our own pre-step injection is tagged `kind: "runtime-xiaofei-memory"`,
+ * 1. Our own pre-step injection is tagged `kind: "dsh-xiaofei-memory"`,
  *    which a naive `startsWith("memory")` check misses — the recall wrapper
  *    then gets stored and re-injected forever.
  * 2. Runtime-generated instructions (schedule reminders, reflect tasks) arrive

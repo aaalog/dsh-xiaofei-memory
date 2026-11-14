@@ -217,7 +217,7 @@ export async function apply(ctx, config) {
         logger,
       });
     } catch (e) {
-      logger?.warn?.(`runtime-xiaofei-memory: core memory disabled after error: ${e?.message ?? e}`);
+      logger?.warn?.(`dsh-xiaofei-memory: core memory disabled after error: ${e?.message ?? e}`);
       return async () => {};
     }
   })();

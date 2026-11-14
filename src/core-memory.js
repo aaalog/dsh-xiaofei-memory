@@ -198,7 +198,7 @@ export async function installCoreMemoryForAgent(agent, { db, config, resolveRole
     } catch (e) {
       // A prompt section must never throw: a throw breaks prompt assembly for
       // every request on this agent. Degrade to an empty section instead.
-      logger?.warn?.(`runtime-xiaofei-memory: core memory render failed: ${e?.message ?? e}`);
+      logger?.warn?.(`dsh-xiaofei-memory: core memory render failed: ${e?.message ?? e}`);
       return "";
     }
   };
@@ -215,7 +215,7 @@ export async function installCoreMemoryForAgent(agent, { db, config, resolveRole
       });
     });
   } catch (e) {
-    logger?.warn?.(`runtime-xiaofei-memory: core memory install failed: ${e?.message ?? e}`);
+    logger?.warn?.(`dsh-xiaofei-memory: core memory install failed: ${e?.message ?? e}`);
     return null;
   }
 
@@ -273,7 +273,7 @@ export function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) 
     }
     fibers.delete(agent);
     const task = handle.dispose().catch((e) => {
-      logger?.warn?.(`runtime-xiaofei-memory: core memory cleanup failed: ${e?.message ?? e}`);
+      logger?.warn?.(`dsh-xiaofei-memory: core memory cleanup failed: ${e?.message ?? e}`);
     });
     pending.add(task);
     task.finally(() => pending.delete(task));
@@ -285,7 +285,7 @@ export function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) 
     if (agents && typeof agents.list === "function") {
       for (const agent of agents.list()) {
         void install(agent).catch((e) => {
-          logger?.warn?.(`runtime-xiaofei-memory: core memory adopt skipped: ${e?.message ?? e}`);
+          logger?.warn?.(`dsh-xiaofei-memory: core memory adopt skipped: ${e?.message ?? e}`);
         });
       }
     }
@@ -294,16 +294,16 @@ export function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) 
     // stop an agent from starting, so every failure is contained.
     ctx.on("agent/created", async ({ agent }) => {
       try { await install(agent); } catch (e) {
-        logger?.warn?.(`runtime-xiaofei-memory: core memory install skipped: ${e?.message ?? e}`);
+        logger?.warn?.(`dsh-xiaofei-memory: core memory install skipped: ${e?.message ?? e}`);
       }
     });
     ctx.on("agent/disposed", ({ agent }) => {
       try { disposeAgent(agent); } catch (e) {
-        logger?.warn?.(`runtime-xiaofei-memory: core memory dispose skipped: ${e?.message ?? e}`);
+        logger?.warn?.(`dsh-xiaofei-memory: core memory dispose skipped: ${e?.message ?? e}`);
       }
     });
   } catch (e) {
-    logger?.warn?.(`runtime-xiaofei-memory: core memory lifecycle wiring failed: ${e?.message ?? e}`);
+    logger?.warn?.(`dsh-xiaofei-memory: core memory lifecycle wiring failed: ${e?.message ?? e}`);
     return noop;
   }
 

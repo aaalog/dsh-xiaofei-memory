@@ -634,7 +634,7 @@ var NON_CAPTURABLE_PREFIXES = [
   "[memory-recall]",
   "<memory-recall>"
 ];
-var OWN_SOURCE_KINDS = /* @__PURE__ */ new Set(["runtime-xiaofei-memory"]);
+var OWN_SOURCE_KINDS = /* @__PURE__ */ new Set(["dsh-xiaofei-memory"]);
 function isNonCapturable(source, text) {
   const kind = source?.kind;
   if (typeof kind === "string") {
@@ -868,7 +868,7 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
       merged: res?.merged ?? false
     });
     logger?.info?.(
-      `runtime-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
+      `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
     );
   }
   purgeArchived(db);
@@ -1118,7 +1118,7 @@ async function installCoreMemoryForAgent(agent, { db, config, resolveRoleIds, lo
       });
       return cache.update(entries, { indexEntries });
     } catch (e) {
-      logger?.warn?.(`runtime-xiaofei-memory: core memory render failed: ${e?.message ?? e}`);
+      logger?.warn?.(`dsh-xiaofei-memory: core memory render failed: ${e?.message ?? e}`);
       return "";
     }
   };
@@ -1134,7 +1134,7 @@ async function installCoreMemoryForAgent(agent, { db, config, resolveRoleIds, lo
       });
     });
   } catch (e) {
-    logger?.warn?.(`runtime-xiaofei-memory: core memory install failed: ${e?.message ?? e}`);
+    logger?.warn?.(`dsh-xiaofei-memory: core memory install failed: ${e?.message ?? e}`);
     return null;
   }
   return {
@@ -1180,7 +1180,7 @@ function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) {
     }
     fibers.delete(agent);
     const task = handle.dispose().catch((e) => {
-      logger?.warn?.(`runtime-xiaofei-memory: core memory cleanup failed: ${e?.message ?? e}`);
+      logger?.warn?.(`dsh-xiaofei-memory: core memory cleanup failed: ${e?.message ?? e}`);
     });
     pending.add(task);
     task.finally(() => pending.delete(task));
@@ -1190,7 +1190,7 @@ function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) {
     if (agents && typeof agents.list === "function") {
       for (const agent of agents.list()) {
         void install(agent).catch((e) => {
-          logger?.warn?.(`runtime-xiaofei-memory: core memory adopt skipped: ${e?.message ?? e}`);
+          logger?.warn?.(`dsh-xiaofei-memory: core memory adopt skipped: ${e?.message ?? e}`);
         });
       }
     }
@@ -1198,18 +1198,18 @@ function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) {
       try {
         await install(agent);
       } catch (e) {
-        logger?.warn?.(`runtime-xiaofei-memory: core memory install skipped: ${e?.message ?? e}`);
+        logger?.warn?.(`dsh-xiaofei-memory: core memory install skipped: ${e?.message ?? e}`);
       }
     });
     ctx.on("agent/disposed", ({ agent }) => {
       try {
         disposeAgent(agent);
       } catch (e) {
-        logger?.warn?.(`runtime-xiaofei-memory: core memory dispose skipped: ${e?.message ?? e}`);
+        logger?.warn?.(`dsh-xiaofei-memory: core memory dispose skipped: ${e?.message ?? e}`);
       }
     });
   } catch (e) {
-    logger?.warn?.(`runtime-xiaofei-memory: core memory lifecycle wiring failed: ${e?.message ?? e}`);
+    logger?.warn?.(`dsh-xiaofei-memory: core memory lifecycle wiring failed: ${e?.message ?? e}`);
     return noop;
   }
   return async () => {
@@ -1414,7 +1414,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261113231356" : "dev";
+var BUILD_STAMP = true ? "20261114022834" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 function defaultDbPath() {
@@ -1527,7 +1527,7 @@ async function apply(ctx, config) {
         logger
       });
     } catch (e) {
-      logger?.warn?.(`runtime-xiaofei-memory: core memory disabled after error: ${e?.message ?? e}`);
+      logger?.warn?.(`dsh-xiaofei-memory: core memory disabled after error: ${e?.message ?? e}`);
       return async () => {
       };
     }

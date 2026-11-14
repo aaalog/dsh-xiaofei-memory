@@ -104,7 +104,7 @@ export function extractEntities(text) {
  * unrelated memories, so they are filtered before grouping.
  *
  * Deliberately conservative: only well-known calendar/locale/time words and
- * pure boilerplate are dropped. Identifiers such as "runtime-xiaofei-memory"
+ * pure boilerplate are dropped. Identifiers such as "dsh-xiaofei-memory"
  * or "SQLite" are meaningful and are kept.
  */
 const NOISE_ENTITIES = new Set([

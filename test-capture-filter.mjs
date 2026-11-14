@@ -29,17 +29,27 @@ const userMsg = (text, source = { kind: "user" }) => ({
 });
 
 console.log("== 1. own injected recall must not be captured ==");
-// This is the exact shape the plugin injects: kind is "runtime-xiaofei-memory",
+// This is the exact shape the plugin injects: kind is "dsh-xiaofei-memory",
 // which a naive startsWith("memory") check does not match.
 let out = await runTurn([
   userMsg("<memory-recall>以下是注入的旧记忆正文，绝不能被再次俘获写回。</memory-recall>",
-    { kind: "runtime-xiaofei-memory", form: "memory-recall" }),
+    { kind: "dsh-xiaofei-memory", form: "memory-recall" }),
   userMsg("帮我看看插件版本对不对"),
 ]);
 check("no entry contains the recall wrapper",
   !out.some((s) => String(s.content).includes("<memory-recall>")),
   JSON.stringify(out.map((s) => String(s.content).slice(0, 30))));
 check("the real user question still gets captured", out.length > 0, `captured=${out.length}`);
+
+// The kind guard must hold on its own, without the <memory-recall> text prefix:
+// otherwise a future change to the wrapper silently re-opens the leak.
+out = await runTurn([
+  userMsg("纯文本注入体，不带 recall 包装", { kind: "dsh-xiaofei-memory", form: "memory-recall" }),
+  userMsg("这是正常的用户提问"),
+]);
+check("own kind rejected even without the text prefix",
+  !out.some((s) => String(s.content).includes("纯文本注入体")),
+  JSON.stringify(out.map((s) => String(s.content).slice(0, 30))));
 
 console.log("== 2. runtime instructions must not be captured ==");
 out = await runTurn([

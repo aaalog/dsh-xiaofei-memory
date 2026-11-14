@@ -89,7 +89,7 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
       merged: res?.merged ?? false,
     });
     logger?.info?.(
-      `runtime-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
+      `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
     );
   }
 

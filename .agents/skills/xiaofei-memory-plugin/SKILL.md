@@ -1,33 +1,40 @@
 ---
 name: xiaofei-memory-plugin
-description: Use when modifying, building, testing, deploying, or debugging the runtime-xiaofei-memory plugin (the "digital hippocampus" long-term memory engine for the DSH runtime) — including its SQLite store, always-on core memory, memory sea UI, nightly sleep, and the pnpm/GitHub install cycle.
-whenToUse: Any task that touches runtime-xiaofei-memory source, its dist bundles, its installed copy under the DSH profile, its SQLite memory database, or that needs the build → push → reinstall → restart cycle to take effect.
+description: Use when modifying, building, testing, deploying, or debugging the dsh-xiaofei-memory plugin (the "digital hippocampus" long-term memory engine for DSH / DeepSeek Harness) — including its SQLite store, always-on core memory, memory sea UI, nightly sleep, and the pnpm/GitHub install cycle.
+whenToUse: Any task that touches dsh-xiaofei-memory source, its dist bundles, its installed copy under the DSH profile, its SQLite memory database, or that needs the build → push → reinstall → restart cycle to take effect.
 ---
 
-# runtime-xiaofei-memory plugin work
+# dsh-xiaofei-memory plugin work
 
-A headless long-term memory plugin for the DSH runtime. Node-side engine plus a
-browser-side View. Zero runtime dependencies apart from `node:sqlite`.
+A headless long-term memory plugin for DSH (DeepSeek Harness). Node-side engine
+plus a browser-side View. Zero runtime dependencies apart from `node:sqlite`.
 
-## The two facts that cause the most wasted time
+## The one false fact that has cost the most time
 
-**1. `runtime` and `runtime` are the same string, and this machine shows them
-interchangeably.** The display layer rewrites `runtime` (bytes `64 73 68`) into
-`runtime` (bytes `72 75 6e 74 69 6d 65`) in tool output AND in text you write.
-Never trust a literal. Verify with hex:
+**The name is `dsh-xiaofei-memory`. There is no `runtime-xiaofei-memory`, and no
+`~/.runtime`.** `runtime-` appears all over this repo's prose and log strings,
+but it is a transcription error that predates this file — not a display
+transform. Ground truth re-verified on disk 2026-11-14:
 
-```python
-print([hex(ord(c)) for c in name][:3])   # 64 73 68 = runtime (correct)
-```
+- Repo / workspace dir: `C:\Users\Administrator\Documents\deepseek-harness\dsh-xiaofei-memory`
+- DSH home: `~/.dsh` (bytes `2e 64 73 68` = `. d s h`)
+- Package name and plugin id: `dsh-xiaofei-memory`
+- Repo: `https://github.com/aaalog/dsh-xiaofei-memory`
+- Store: `~/.dsh/plugin-data/dsh-xiaofei-memory/memory.sqlite`
 
-- Real repo: `https://github.com/aaalog/runtime-xiaofei-memory`
-- Real home dir: `~/.runtime` (bytes `2e 64 73 68`)
-- Real plugin dir name: `runtime-xiaofei-memory`
+Why "the display layer rewrites it" is wrong: the profile pins the dependency as
+`github:aaalog/dsh-xiaofei-memory#<SHA>`, and `pnpm-lock.yaml` records a tarball
+fetched from `https://codeload.github.com/aaalog/dsh-xiaofei-memory/tar.gz/<SHA>`
+together with its integrity hash. A `runtime-` literal in that position would
+404 and the install would fail. Nothing rewrites the bytes.
 
-Consequence: paths typed literally fail with "No such file or directory". Build
-paths from `os.listdir` results instead of string literals.
+Bytes `64 73 68` spell `d`, `s`, `h`. Any text claiming that hex equals
+`runtime` is itself the bug. So: **do not "correct" `dsh` to `runtime` in paths,
+output or files.** If a name looks wrong, check the filesystem, `git remote -v`
+and `package.json` — not the prose in this repo, and not session history, which
+both carry the same corruption.
 
-**2. Host changes need a restart; client changes only need a page refresh.**
+**Host changes need a restart; client changes only need a page refresh.**
 
 | Bundle | Loaded when | Effect of editing |
 |---|---|---|
@@ -96,7 +103,8 @@ done
 ```
 
 Expected total: **202 passed, 0 failed**. The system default `node` is v16 and
-has no `node:sqlite`; always pin v22.18.0 or the runtime's bundled node.
+has no `node:sqlite`; always pin v22.18.0 or the node bundled with the DSH
+runtime.
 
 ## Build → push → reinstall (the only way a change reaches the running plugin)
 
@@ -112,12 +120,12 @@ git add -A && git commit -m "..." && git push origin main
 SHA=$(git rev-parse HEAD)
 
 # 3. re-pin the profile dependency to the new commit
-#    profile: ~/.runtime/profiles/desktop/package.json
-#    "runtime-xiaofei-memory": "github:aaalog/runtime-xiaofei-memory#<SHA>"
+#    profile: ~/.dsh/profiles/desktop/package.json
+#    "dsh-xiaofei-memory": "github:aaalog/dsh-xiaofei-memory#<SHA>"
 
-# 4. install with the runtime's own toolchain
-NODE=".../runtime/primary-runtime/dependencies/node/bin/node.exe"
-PNPM=".../runtime/primary-runtime/dependencies/pnpm/bin/pnpm.cjs"
+# 4. install with DSH's own toolchain
+NODE="~/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe"
+PNPM="~/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.cjs"
 "$NODE" "$PNPM" install --filter .   # cwd = the profile dir
 ```
 
@@ -130,7 +138,7 @@ Back up before touching anything installed:
 
 ## Touching the memory database
 
-Production store: `~/.runtime/plugin-data/runtime-xiaofei-memory/memory.sqlite`
+Production store: `~/.dsh/plugin-data/dsh-xiaofei-memory/memory.sqlite`
 
 - **Read-only unless explicitly authorized**: `sqlite3.connect("file:"+path+"?mode=ro", uri=True)`
 - **Back up first** — both a `.sqlite` copy and a JSON dump — and verify the
@@ -166,11 +174,17 @@ db   = os.path.join(pdir, "memory.sqlite")
 - The plugin calls itself a "digital hippocampus" but implements no PPR —
   it is retrieval + 1-hop entity co-occurrence + layer ordering. Do not build
   on the metaphor.
+- **Live naming bug in the code.** `src/capture.js` sets
+  `OWN_SOURCE_KINDS = new Set(["runtime-xiaofei-memory"])`, but `src/index.js`
+  tags its own injection `source.kind: "dsh-xiaofei-memory"`. The set therefore
+  never matches, and self-injection is excluded only because the text also
+  starts with `<memory-recall>`. Fix the set to `dsh-xiaofei-memory`, and keep
+  the prefix guard as the second line of defence.
 
 ## Console / UI landmarks
 
 - The Conversation View tabs live in slot `conversation.view` (list,
-  `replaceRisk: none`). This plugin registers `id: runtime-xiaofei-memory`,
+  `replaceRisk: none`). This plugin registers `id: dsh-xiaofei-memory`,
   `order: 40` — after chat(0)/trajectory(10)/context(20)/fleet(30).
 - Section slot: `systemPrompt.section({ name: "memory:core", order: 10150,
   interpolate: false, text })`. `interpolate: false` matters: memory text may
