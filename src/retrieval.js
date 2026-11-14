@@ -3,9 +3,12 @@
 // token-budgeted injection as a <memory-recall> user message.
 
 import { searchMemories, graphExpand, searchByEntities } from "./db.js";
-import { tokenEstimate, clamp } from "./util.js";
+import { tokenEstimate, clamp, isMeaningfulEntity } from "./util.js";
 
 const LAYER_PRIORITY = { core: 0, weekly: 1, recent: 2, diffusion: 3 };
+
+/** Default relevance floor on query coverage (~1/3 of the query's bigrams). */
+export const DEFAULT_MIN_SIM = 0.3;
 
 // Introspective questions surface identity / companionship soul memories.
 const INTROSPECTION_RE = /(我是谁|你是谁|我的角色|我的身份|我是什么|我是干什么|我是什么人|我的存在|我的使命|我为什么在这里|我是做什么)/;
@@ -13,6 +16,11 @@ const IDENTITY_ENTITIES = ["赛博战友", "陪伴", "角色", "身份", "存在
 
 /**
  * Retrieve memories for a prompt and assemble the <memory-recall> text.
+ *
+ * Ranking is relevance-first: candidates are scored by query coverage and
+ * dropped below `minSim`, so an unrelated question injects nothing instead of
+ * the same handful of high-strength identity memories.
+ *
  * @returns {null | { text: string, injectedIds: string[], recalled: number }}
  */
 export function retrieveForPrompt(db, {
@@ -22,22 +30,39 @@ export function retrieveForPrompt(db, {
   enableGraphRecall = true,
   maxTokens = 1200,
   limit = 8,
+  /** Weight of the relevance term in the score (evolution tunes this). */
+  weight = 0.65,
+  /** Relevance floor; the introspective probe bypasses it by design. */
+  minSim = DEFAULT_MIN_SIM,
 } = {}) {
   if (!query) return null;
-  const primary = searchMemories(db, query, roleIds, { decay, limit });
+  // "Who are you?" has no lexical overlap with an identity memory, so the
+  // introspective path keeps the recent-fallback to give the ranker a pool.
+  const introspective = INTROSPECTION_RE.test(query);
+  const primary = searchMemories(db, query, roleIds, {
+    decay,
+    limit,
+    weight,
+    minSim: introspective ? 0 : minSim,
+    allowFallback: introspective,
+  });
   const primaryIds = primary.map((m) => m.id);
 
   // Semantic floor: introspective questions surface identity/companion memories
   // even without lexical overlap ("你觉得我是谁" -> 赛博战友/陪伴).
-  const floor = INTROSPECTION_RE.test(query)
+  const floor = introspective
     ? searchByEntities(db, IDENTITY_ENTITIES, roleIds, { limit: 4, excludeIds: primaryIds })
     : [];
 
   let diffused = [];
   if (enableGraphRecall && primary.length > 0) {
+    // Entity extraction is heuristic and harvests filler words, so an
+    // unfiltered 1-hop expansion walks the graph through "Time"/"ok" and drags
+    // in unrelated rows. Only meaningful entities may seed diffusion.
     const topEntities = primary
       .slice(0, 3)
       .flatMap((m) => m.entities ?? [])
+      .filter((e) => isMeaningfulEntity(e))
       .slice(0, 12);
     diffused = graphExpand(db, topEntities, roleIds, {
       confidence: 0.8,

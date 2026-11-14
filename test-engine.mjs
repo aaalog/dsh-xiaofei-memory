@@ -33,6 +33,19 @@ check("recall produced", recall !== null && recall.text.length > 0);
 check("recall mentions 赛博战友", recall?.text.includes("赛博战友"));
 check("recall mentions 陪伴", recall?.text.includes("陪伴"));
 
+console.log("== 2b. Relevance floor (unrelated queries must inject nothing) ==");
+const noOverlap = searchMemories(db, "量子色动力学中的渐近自由", ["global"], { limit: 8 });
+check("no-overlap search returns []", noOverlap.length === 0, `n=${noOverlap.length}`);
+const optInFallback = searchMemories(db, "量子色动力学中的渐近自由", ["global"], { limit: 8, allowFallback: true });
+check("opt-in fallback still works", optInFallback.length > 0, `n=${optInFallback.length}`);
+const unrelated = retrieveForPrompt(db, { query: "量子色动力学中的渐近自由", roleIds: ["global"], maxTokens: 1200, limit: 8 });
+check("unrelated query injects nothing", unrelated === null, unrelated ? unrelated.text.slice(0, 40) : "");
+
+console.log("== 2c. Two-character CJK queries (LIKE fallback) ==");
+addMemory(db, { roleId: "global", layer: "recent", content: "生产环境最终部署在宝塔服务器上，走 HTTPS 管理。" });
+const twoChar = searchMemories(db, "部署", ["global"], { limit: 8 });
+check("2-char CJK query hits via LIKE", twoChar.length > 0 && twoChar[0].content.includes("部署"), `n=${twoChar.length}`);
+
 console.log("== 3. Role isolation (PRD acceptance #2) ==");
 const isolated = retrieveForPrompt(db, { query: "负反馈 试错 进化", roleIds: ["global"], maxTokens: 1200, limit: 8 });
 // mem_004 (work-assistant) must NOT appear in a global-only recall.
@@ -52,6 +65,17 @@ check("capture added a memory", after >= 11, `active=${after}`);
 const newMem = db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT 1").get();
 check("captured layer inferred", newMem && newMem.layer === "core", `layer=${newMem?.layer}`); // contains 记住 -> core
 check("captured content present", newMem && newMem.content.includes("47.104.102.35"));
+
+console.log("== 4b. merge keeps the richer text ==");
+const shortFact = addMemory(db, { roleId: "global", layer: "recent", content: "部署完成" });
+const longFact = addMemory(db, {
+  roleId: "global",
+  layer: "core",
+  content: "部署完成：宝塔面板已升级到 9.2，站点证书自动续期已开启，回滚脚本放在 /opt/rollback.sh。",
+});
+check("long fact merged into the short row", longFact.merged === true && longFact.id === shortFact.id, JSON.stringify({ short: shortFact, long: longFact }));
+const mergedRow = db.prepare("SELECT content FROM memories WHERE id = ?").get(shortFact.id);
+check("merged row kept the longer content", (mergedRow?.content ?? "").includes("回滚脚本"), (mergedRow?.content ?? "").slice(0, 40));
 
 console.log("== 5. Feedback damp ==");
 const fb = new FeedbackManager({ db, dampFactor: 0.85, logger: console });
@@ -82,7 +106,11 @@ for (let i = 0; i < topics.length; i++) {
 }
 db.exec("COMMIT");
 const preSleep = countMemories(db);
-const sleepStats = await runNightlySleep(db, {});
+const guardStats = await runNightlySleep(db, {});
+check("no summarizer => distillation skipped (no data loss)",
+  guardStats.distilledGroups === 0 && guardStats.archived === 0,
+  JSON.stringify({ groups: guardStats.distilledGroups, archived: guardStats.archived }));
+const sleepStats = await runNightlySleep(db, { summarize: async (texts) => "总结：" + texts[0] });
 check("sleep distilled a core summary", sleepStats.distilledGroups >= 1, JSON.stringify(sleepStats));
 check("sleep archived >=12 originals", sleepStats.archived >= 12, `archived=${sleepStats.archived}`);
 const coreRows = db.prepare("SELECT count(*) n FROM memories WHERE layer='core' AND status='active'").get();

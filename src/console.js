@@ -9,6 +9,16 @@ import { selectCoreMemories, renderCoreMemory, CORE_MEMORY_SECTION_NAME, CORE_ME
 import { buildMemoryIndex, renderMemoryIndex } from "./memory-index.js";
 import { tokenEstimate, isMeaningfulEntity, parseJsonList } from "./util.js";
 
+/** Every role namespace present in the store ("all roles" queries). */
+function allRoleIds(db) {
+  try {
+    const roles = db.prepare("SELECT DISTINCT role_id FROM memories").all().map((r) => r.role_id);
+    return roles.length > 0 ? roles : ["global"];
+  } catch {
+    return ["global"];
+  }
+}
+
 /** Count active memories grouped by layer and by role_id. */
 export function getMemoryStats(db) {
   const byLayer = { core: 0, weekly: 0, recent: 0 };
@@ -31,7 +41,7 @@ export function getMemoryStats(db) {
 
 /** Search memories, returning scored results (no token assembly). */
 export function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }) {
-  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
+  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : allRoleIds(db);
   const rows = searchMemories(db, query, roleIds, { decay, limit });
   return rows.map((r) => ({
     id: r.id,
@@ -50,10 +60,11 @@ export function searchMemory(db, { query, roleId = "global", limit = 12, decay =
 export function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
   return retrieveForPrompt(db, {
     query,
-    roleIds: roleId && roleId !== "all" ? [roleId, "global"] : ["global"],
+    roleIds: roleId && roleId !== "all" ? [roleId, "global"] : allRoleIds(db),
     enableGraphRecall: true,
     maxTokens,
     limit: 8,
+    weight: loadEvolution(db).retrievalWeight,
   });
 }
 
@@ -174,8 +185,10 @@ export function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxI
 
 /** Return the 10 soul seed memories (System tab). */
 export function listSoulMemories(db) {
+  // Generated ids are `mem_<ts36>_<rand>` and also start with `mem_`, so the
+  // seed range must be matched explicitly rather than by prefix.
   const rows = db.prepare(
-    "SELECT id, role_id, layer, content FROM memories WHERE id LIKE 'mem_%' ORDER BY id ASC LIMIT 10"
+    "SELECT id, role_id, layer, content FROM memories WHERE id GLOB 'mem_0[0-9][0-9]' ORDER BY id ASC LIMIT 10"
   ).all();
   return rows;
 }

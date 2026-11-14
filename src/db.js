@@ -10,6 +10,7 @@ import {
   daysSince,
   timeDecay,
   similarity,
+  queryCoverage,
   parseJsonList,
   toJsonList,
   normalizeContent,
@@ -169,9 +170,14 @@ export function addMemory(db, { roleId = "global", layer = "recent", content, en
       const mergedEntities = Array.from(new Set([...(existing.entities ?? []), ...entities])).slice(0, 20);
       const mergedStrength = clamp((existing.strength ?? 1.0) + 0.1, 0.1, 5);
       const mergedOrigin = Array.from(new Set([...(existing.originIds ?? []), ...originIds])).slice(-20);
+      // Keep the richer text. Merging used to leave the old content untouched,
+      // so a longer new fact that merely quoted an existing short one vanished
+      // without a trace (similarity is containment-based, so a 9-char row can
+      // "match" a 300-char fact at 1.0).
+      const mergedContent = text.length > (existing.content?.length ?? 0) ? text : existing.content;
       db.prepare(
-        "UPDATE memories SET strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
-      ).run(mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
+        "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
+      ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
       replaceEntities(db, c.id, mergedEntities);
       return { id: c.id, merged: true };
     }
@@ -225,6 +231,15 @@ export function adjustStrength(db, id, mode, amount) {
   return clamped;
 }
 
+/** Set a memory's strength to an absolute value (used to undo a damp). */
+export function setStrength(db, id, value) {
+  const row = db.prepare("SELECT strength FROM memories WHERE id = ?").get(id);
+  if (!row) return null;
+  const clamped = clamp(Number(value) || 0, 0.05, 5);
+  db.prepare("UPDATE memories SET strength = ? WHERE id = ?").run(clamped, id);
+  return clamped;
+}
+
 /** Archive a memory (soft delete). */
 export function archiveMemory(db, id) {
   db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(id);
@@ -239,10 +254,23 @@ export function touchAccessed(db, id) {
  * Hybrid retrieval:
  * 1. FTS5 (trigram) MATCH on content, filtered by role_ids and status='active'.
  * 2. LIKE substring pre-filter (CJK-robust, any length).
- * 3. Score every candidate by bigram similarity * strength * timeDecay.
- *    score = (0.35 + 0.65 * similarity) * strength * exp(-decay * days)
+ * 3. Score every candidate by query coverage * strength * timeDecay:
+ *    score = (1 - weight + weight * queryCoverage) * strength * exp(-decay * days)
+ *
+ * No lexical overlap means no evidence of relevance, so the result is empty
+ * unless `allowFallback` is set. Callers that want the old "recent 200"
+ * behaviour must ask for it explicitly.
  */
-export function searchMemories(db, query, roleIds, { decay = 0.01, limit = 8 } = {}) {
+export function searchMemories(db, query, roleIds, {
+  decay = 0.01,
+  limit = 8,
+  /** Weight of the relevance term (0 = pure strength/decay, 1 = pure relevance). */
+  weight = 0.65,
+  /** Relevance floor on queryCoverage(); candidates below it are dropped. */
+  minSim = 0,
+  /** Opt-in "recent 200" fallback. Only the introspective identity probe uses it. */
+  allowFallback = false,
+} = {}) {
   const q = normalizeContent(query);
   if (!q) return [];
   const roles = Array.isArray(roleIds) ? roleIds : ["global"];
@@ -263,22 +291,29 @@ export function searchMemories(db, query, roleIds, { decay = 0.01, limit = 8 } =
       /* fall through to LIKE */
     }
   }
-  // LIKE substring pre-filter for each term (handles 2-char CJK that trigram cannot).
+  // LIKE substring pre-filter (handles 2-char CJK that trigram cannot).
+  // Terms are OR-ed into ONE statement: the old loop ran a separate full-table
+  // scan per term (up to 24 per query), and it bound its parameters in the
+  // wrong order (pattern to the role placeholder), so it never matched at all.
   const terms = tokenizeQuery(q);
   if (terms.length > 0) {
-    const likeSql = `SELECT m.id FROM memories m WHERE m.status = 'active' AND ${roleIn} AND m.content LIKE ? ESCAPE '\\'`;
-    for (const t of terms) {
-      try {
-        const rows = db.prepare(likeSql).all(`%${escapeLike(t)}%`, ...roles);
-        for (const r of rows) candidateIds.add(r.id);
-      } catch { /* ignore */ }
-    }
+    const likeClause = terms.map(() => "m.content LIKE ? ESCAPE '!'").join(" OR ");
+    const likeSql = `SELECT m.id FROM memories m WHERE m.status = 'active' AND ${roleIn} AND (${likeClause})`;
+    try {
+      const rows = db.prepare(likeSql).all(...roles, ...terms.map((t) => `%${escapeLike(t)}%`));
+      for (const r of rows) candidateIds.add(r.id);
+    } catch { /* ignore */ }
   }
 
   let rows;
   if (candidateIds.size === 0) {
-    // Nothing lexical matched: fall back to recent actives so the scoring pass
-    // still has a bounded candidate set (a semantic floor may still surface).
+    // No lexical overlap at all. Without an embedding model there is no
+    // evidence of relevance, so return nothing: the old unconditional
+    // "recent 200" fallback made unrelated queries inject the same identity
+    // memories (three unrelated queries returned an identical id set).
+    // `allowFallback` is reserved for the introspective identity probe, which
+    // is a deliberate shortcut rather than a topic search.
+    if (!allowFallback) return [];
     rows = db.prepare(
       `SELECT m.* FROM memories m WHERE m.status = 'active' AND ${roleIn}
        ORDER BY m.created_at DESC LIMIT 200`
@@ -290,11 +325,15 @@ export function searchMemories(db, query, roleIds, { decay = 0.01, limit = 8 } =
     ).all(...Array.from(candidateIds));
   }
 
-  const scored = rows.map((r) => {
-    const sim = similarity(q, r.content);
-    const score = (0.35 + 0.65 * sim) * (r.strength ?? 1.0) * timeDecay(r.created_at, decay);
-    return { ...r, entities: parseJsonList(r.entities), _score: score, _sim: sim };
-  });
+  const w = clamp(Number(weight) || 0, 0, 1);
+  const floor = clamp(Number(minSim) || 0, 0, 1);
+  const scored = rows
+    .map((r) => {
+      const sim = queryCoverage(q, r.content);
+      const score = (1 - w + w * sim) * (r.strength ?? 1.0) * timeDecay(r.created_at, decay);
+      return { ...r, entities: parseJsonList(r.entities), _score: score, _sim: sim };
+    })
+    .filter((r) => r._sim >= floor);
   scored.sort((a, b) => b._score - a._score);
   return scored.slice(0, limit);
 }
@@ -401,7 +440,8 @@ export function isSeedMemoryId(id) {
 }
 
 function escapeLike(s) {
-  return s.replace(/[\\%_]/g, (c) => "\\" + c);
+  // The query uses ESCAPE '!' so the pattern needs no backslash-doubling.
+  return s.replace(/[!%_]/g, (c) => "!" + c);
 }
 
 /** Split a query into search terms (CJK runs and latin words). */

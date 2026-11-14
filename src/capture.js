@@ -50,6 +50,43 @@ function isNonCapturable(source, text) {
   return false;
 }
 
+/**
+ * Text the runtime appends to a user message rather than text the user typed.
+ * Captured verbatim these become multi-KB "memories" and are then promoted into
+ * the always-on block (live store seen: a 5.7 KB system-reminder blob and a
+ * 1.4 KB "Current runtime context" snapshot, one of them re-created every turn).
+ */
+const INJECTED_BLOCKS = [
+  /<system-reminder>[\s\S]*?<\/system-reminder>/g,
+  /<memory-recall>[\s\S]*?<\/memory-recall>/g,
+];
+const INJECTED_TAIL = [
+  // DSH appends a full runtime snapshot after the real user text. The marker
+  // is distinctive enough that a genuine message is unlikely to contain it.
+  /Current runtime context\. This snapshot supersedes[\s\S]*$/,
+  // Plugin-injected guidance appended after the user text (e.g. the
+  // "batching-guidance" block). Seen in the live store as a 11.7 KB "memory".
+  /\[Plugin context from [\s\S]*$/,
+  /Time sampled while preparing[^\n]*/g,
+  /Browser time zone for this request:[^\n]*/g,
+  /\[model changed:[^\]]*\]/g,
+];
+
+/**
+ * Strip runtime-injected blocks, leaving only what the user actually wrote.
+ * Returns "" when the message was boilerplate only.
+ */
+export function stripInjectedContext(text) {
+  let out = String(text ?? "");
+  for (const re of INJECTED_BLOCKS) out = out.replace(re, " ");
+  for (const re of INJECTED_TAIL) out = out.replace(re, " ");
+  return out.replace(/\s+/g, " ").trim();
+}
+
+/** A real memory is a sentence or two; anything longer is a paste or a leak. */
+const MAX_CAPTURE_CHARS = 1500;
+const MAX_EXTRACT_CHARS = 4000;
+
 export class CaptureTracker {
   constructor({ store, roleOf, logger, extractor }) {
     this.store = store;
@@ -71,13 +108,17 @@ export class CaptureTracker {
       const state = this.turn.get(sessionId);
       if (!state) return false;
       const data = event.data;
-      const text = (data?.content ?? [])
+      const raw = (data?.content ?? [])
         .filter((b) => b?.type === "text" && typeof b?.text === "string")
         .map((b) => b.text)
         .join("\n");
-      if (!text.trim()) return false;
+      if (!raw.trim()) return false;
       const source = data?.source;
-      if (isNonCapturable(source, text)) return false;
+      if (isNonCapturable(source, raw)) return false;
+      // Drop runtime-injected boilerplate before it can be stored. A message
+      // that was only boilerplate yields "" and is skipped entirely.
+      const text = stripInjectedContext(raw);
+      if (!text) return false;
       if (t === "user/message") state.user.push(text);
       else state.assistant.push(text);
       return false;
@@ -108,17 +149,25 @@ export class CaptureTracker {
     const primary = userText.length >= 8 ? userText : (assistantText || userText);
     const source = normalizeContent(primary);
     if (!source || source.length < 8) return;
+    // A long paste is not one fact. Bound what the extractor sees, and never
+    // let a blob become an always-on memory.
+    const excerpt = source.length > MAX_EXTRACT_CHARS ? source.slice(0, MAX_EXTRACT_CHARS) : source;
 
     let extracted = null;
     if (typeof this.extractor === "function") {
       try {
-        extracted = await this.extractor(source, { userText, assistantText, sessionId });
+        extracted = await this.extractor(excerpt, { userText, assistantText, sessionId });
       } catch { /* fall back to heuristic */ }
     }
 
-    const entities = (extracted?.entities?.length ? extracted.entities : extractEntities(source)).slice(0, 16);
-    const layer = extracted?.layer ?? inferLayer(source);
-    const content = normalizeContent(extracted?.content ?? source);
+    const entities = (extracted?.entities?.length ? extracted.entities : extractEntities(excerpt)).slice(0, 16);
+    let layer = extracted?.layer ?? inferLayer(source);
+    let content = normalizeContent(extracted?.content ?? excerpt);
+    if (content.length > MAX_CAPTURE_CHARS) {
+      content = content.slice(0, MAX_CAPTURE_CHARS) + "…";
+      // A truncated fragment is not a principle: keep it out of core.
+      if (layer === "core") layer = "weekly";
+    }
 
     const res = this.store({ roleId, layer, content, entities });
     if (res?.merged) {

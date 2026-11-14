@@ -52,7 +52,20 @@ console.log("    requested=5 stored=" + stored + " uniqueIds=" + new Set(ids).si
 check("5 new memories survive merge on top of 2 seeded recent rows", stored === 7, "stored=" + stored);
 
 const logs = [];
-const st = await runNightlySleep(db, { logger: { info: (m) => logs.push(m) } });
+console.log("    scanned=" + stored + " threshold=" + distillThreshold(stored));
+
+console.log("== 3a. no summarizer => no distillation (data-loss guard) ==");
+const noSum = await runNightlySleep(db, {});
+check("distillation skipped without a summarizer", noSum.distilledGroups === 0 && noSum.archived === 0, JSON.stringify({ g: noSum.distilledGroups, a: noSum.archived }));
+check("skip reason reported", noSum.distillSkipped === "no-summarizer", String(noSum.distillSkipped));
+check("vacuum still runs", noSum.vacuumed === true);
+check("original rows still present", listLayerMemories(db, "recent").length === stored, "n=" + listLayerMemories(db, "recent").length);
+
+console.log("== 3b. distillation with an LLM summarizer ==");
+const st = await runNightlySleep(db, {
+  summarize: async (texts) => "共同实体摘要：" + texts.join("；").slice(0, 60),
+  logger: { info: (m) => logs.push(m) },
+});
 console.log("    scanned=" + st.scanned + " threshold=" + st.threshold + " groups=" + st.distilledGroups + " archived=" + st.archived);
 check("threshold is 3 for a 5-row layer", st.threshold === 3);
 check("distilled the shared-entity group", st.distilledGroups >= 1, JSON.stringify(st.details.map((d) => d.entity)));

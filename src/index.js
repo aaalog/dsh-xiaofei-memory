@@ -65,6 +65,9 @@ export const Config = z.object({
   memoryIndexLimit: z.number().default(40),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
+  /** Relevance floor for auto-injection: share of the query's bigrams that must
+   *  appear in a memory before it is injected (0 disables the floor). */
+  recallMinSim: z.number().default(0.3),
   /** Role registry for the management console. Volatile = editable in the console. */
   roles: z.array(z.object({
     id: z.string().required(),
@@ -83,6 +86,40 @@ const BUILD_STAMP = typeof __DSHXF_BUILD__ === "string" ? __DSHXF_BUILD__ : "dev
 
 const LAST_SLEEP_KEY = "meta.lastSleepAt";
 const RECALL_STATS_KEY = "meta.recallStats";
+const EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
+
+/** Read the recall counters, tolerating a missing or corrupted meta value. */
+function readRecallStats(db) {
+  try {
+    const raw = metaGet(db, RECALL_STATS_KEY);
+    if (!raw) return { count: 0, corrections: 0 };
+    const parsed = JSON.parse(raw);
+    return {
+      count: Math.max(0, Number(parsed?.count) || 0),
+      corrections: Math.max(0, Number(parsed?.corrections) || 0),
+    };
+  } catch {
+    return { count: 0, corrections: 0 };
+  }
+}
+
+/**
+ * Accumulate recall counters between sleep passes. These are the only inputs
+ * `runEvolution` has; without them the evolution loop can never fire (it used
+ * to always read 0, so every night was a no-op).
+ */
+function bumpRecallStats(db, delta = {}) {
+  const addCount = Math.max(0, Number(delta.count) || 0);
+  const addCorrections = Math.max(0, Number(delta.corrections) || 0);
+  if (addCount === 0 && addCorrections === 0) return;
+  try {
+    const current = readRecallStats(db);
+    metaSet(db, RECALL_STATS_KEY, JSON.stringify({
+      count: current.count + addCount,
+      corrections: current.corrections + addCorrections,
+    }));
+  } catch { /* counters are advisory; never break the turn */ }
+}
 
 function defaultDbPath() {
   const home = process.env.DSH_HOME || join(homedir(), ".dsh");
@@ -112,9 +149,12 @@ export async function apply(ctx, config) {
   const feedback = new FeedbackManager({ db, dampFactor: config.dampFactor, logger });
 
   // --- Capture tracker ---------------------------------------------------
+  // Write-side role isolation: a captured memory must land in the role
+  // namespace of the session it came from, not in the global default.
+  const sessionRole = new Map(); // sessionId -> roleId
   const tracker = new CaptureTracker({
     store: (args) => addMemory(db, args),
-    roleOf: () => config.roleId,
+    roleOf: (sid) => sessionRole.get(sid) ?? config.roleId,
     logger,
     extractor: config.useLlmExtraction
       ? makeLlmExtractor(buildLlmCaller(ctx), { model: config.extractionModel })
@@ -147,6 +187,8 @@ export async function apply(ctx, config) {
         query,
         roleIds: [roleId, "global"],
         decay: evolution.timeDecay,
+        weight: evolution.retrievalWeight,
+        minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,
         limit: config.recallLimit,
@@ -155,7 +197,13 @@ export async function apply(ctx, config) {
 
       const sid = agent?.session?.id ?? "anon";
       lastInjected.set(sid, recall.injectedIds);
+      if (lastInjected.size > 500) {
+        const oldest = lastInjected.keys().next().value;
+        if (oldest !== undefined) lastInjected.delete(oldest);
+      }
       for (const id of recall.injectedIds) touchAccessed(db, id);
+      // Feed the evolution loop: how many memories were actually injected.
+      bumpRecallStats(db, { count: recall.injectedIds.length });
 
       const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
       const memoryMessage = createUserMessage({
@@ -176,6 +224,12 @@ export async function apply(ctx, config) {
   ctx.on("session/event", (session, event) => {
     if (session?.header?.origin === "subagent") return;
     const sid = session?.id ?? "anon";
+    // Remember the session's role so capture lands in the right namespace.
+    sessionRole.set(sid, session?.header?.roleId ?? config.roleId);
+    if (sessionRole.size > 500) {
+      const oldest = sessionRole.keys().next().value;
+      if (oldest !== undefined) sessionRole.delete(oldest);
+    }
     const flushed = tracker.onEvent(sid, event);
     if (!flushed) return;
     // turn/end just flushed an async capture; nothing to do synchronously.
@@ -194,6 +248,8 @@ export async function apply(ctx, config) {
         const ids = lastInjected.get(sid);
         if (!ids || ids.length === 0) return;
         for (const id of ids) feedback.damp(id);
+        // A correction against an injected set is the loop's second input.
+        bumpRecallStats(db, { corrections: ids.length });
         logger?.info?.(`dsh-xiaofei-memory: correction via ${toolName}, damped ${ids.length} recalled memories`);
       } catch { /* ignore */ }
     });
@@ -243,13 +299,13 @@ export async function apply(ctx, config) {
         ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel)
         : null;
       const stats = await runNightlySleep(db, { summarize, logger });
-      const recallStats = JSON.parse(metaGet(db, RECALL_STATS_KEY) ?? '{"count":0,"corrections":0}');
+      const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
         recallCorrections: recallStats.corrections,
       });
       metaSet(db, LAST_SLEEP_KEY, Date.now());
-      metaSet(db, RECALL_STATS_KEY, '{"count":0,"corrections":0}');
+      metaSet(db, RECALL_STATS_KEY, EMPTY_RECALL_STATS);
       logger?.info?.(`dsh-xiaofei-memory: nightly sleep done (${JSON.stringify(stats)}), evolution changed=${evolved.changed}`);
     } catch (e) {
       try { logger?.warn?.(`dsh-xiaofei-memory: nightly sleep failed: ${e?.message ?? e}`); } catch { /* ignore */ }
@@ -273,10 +329,13 @@ export async function apply(ctx, config) {
   // --- Expose memory-core API (PRD 5.2) ---------------------------------
   const core = {
     retrieve(query, opts = {}) {
+      const evolution = loadEvolution(db);
       return retrieveForPrompt(db, {
         query,
         roleIds: opts.roleIds ?? [config.roleId, "global"],
-        decay: loadEvolution(db).timeDecay,
+        decay: evolution.timeDecay,
+        weight: evolution.retrievalWeight,
+        minSim: opts.minSim ?? config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: opts.maxTokens ?? config.maxRecallTokens,
         limit: opts.limit ?? config.recallLimit,
@@ -523,10 +582,13 @@ export async function apply(ctx, config) {
       render: (_args, v) => [{ type: "text", text: v?.ok ? (v.text || "（没有命中记忆）") : "检索失败。" }],
     },
     async execute(args) {
+      const evolution = loadEvolution(db);
       const recall = retrieveForPrompt(db, {
         query: args?.query,
         roleIds: [config.roleId, "global"],
-        decay: loadEvolution(db).timeDecay,
+        decay: evolution.timeDecay,
+        weight: evolution.retrievalWeight,
+        minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,
         limit: args?.limit ?? config.recallLimit,

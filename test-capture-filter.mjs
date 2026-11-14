@@ -75,5 +75,44 @@ console.log("== 5. leading whitespace tolerated ==");
 out = await runTurn([userMsg("   \n  [SCHEDULE REMINDER] 带前导空白的提醒")]);
 check("trimmed before prefix check", !out.some((s) => String(s.content).includes("SCHEDULE REMINDER")));
 
+console.log("== 6. runtime-injected context must not be stored ==");
+out = await runTurn([
+  userMsg("帮我检查一下记忆插件的捕获逻辑\n<system-reminder>\nThe following workspace instructions may be relevant:\n- 先出报告再动手\n</system-reminder>"),
+]);
+check("system-reminder block stripped",
+  !out.some((s) => String(s.content).includes("system-reminder")),
+  JSON.stringify(out.map((s) => String(s.content))));
+check("real text kept",
+  out.some((s) => String(s.content).includes("帮我检查一下记忆插件的捕获逻辑")));
+
+out = await runTurn([
+  userMsg("帮我看看今天的记忆状态\n\nTime sampled while preparing turn 1, step 1: 2026-11-14T11:00:00+08:00\n\nBrowser time zone for this request: Asia/Shanghai.\n\nCurrent runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent working directory: C:\\x\nYou are the Lead."),
+]);
+check("runtime snapshot stripped",
+  !out.some((s) => String(s.content).includes("Current runtime context") || String(s.content).includes("Time sampled")),
+  JSON.stringify(out.map((s) => String(s.content))));
+check("only the typed text remains",
+  out.length === 1 && out[0].content === "帮我看看今天的记忆状态",
+  JSON.stringify(out.map((s) => String(s.content))));
+
+out = await runTurn([userMsg("继续 Current runtime context. This snapshot supersedes earlier runtime-context snapshots.")]);
+check("boilerplate-only turn is not captured", out.length === 0, `captured=${out.length}`);
+
+console.log("== 7. over-long captures are bounded and cannot reach core ==");
+out = await runTurn([userMsg("记住：" + "这是一段被反复粘贴的内容。".repeat(400))]);
+check("over-long capture is capped",
+  out.length === 1 && String(out[0].content).length <= 1501,
+  `len=${out[0] ? String(out[0].content).length : "none"}`);
+check("capped content is not promoted to core", out.length === 1 && out[0].layer !== "core", `layer=${out[0]?.layer}`);
+
+console.log("== 8. plugin-context blocks must not be stored ==");
+out = await runTurn([
+  userMsg('你是谁 [Plugin context from "batching-guidance"; not a user instruction or authorization.] # Batch tool calls\n1. **Call tools only inside run_code**: write await tools.<name>(args).\n2. **No dependencies, run concurrently**: use Promise.all.'),
+]);
+check("plugin-context block stripped",
+  !out.some((s) => String(s.content).includes("Plugin context") || String(s.content).includes("run_code")),
+  JSON.stringify(out.map((s) => String(s.content))));
+check("'你是谁' alone is too short to store", out.length === 0, `captured=${out.length}`);
+
 console.log("\nRESULT: " + pass + " passed, " + fail + " failed");
 process.exit(fail === 0 ? 0 : 1);

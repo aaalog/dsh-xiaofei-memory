@@ -28,22 +28,32 @@ function tokenEstimate(text) {
   const latin = text.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g, " ").split(/\s+/).filter(Boolean).length;
   return cjk + latin;
 }
+function bigrams(s) {
+  const set = /* @__PURE__ */ new Set();
+  const chars = Array.from(s);
+  if (chars.length === 1) return /* @__PURE__ */ new Set([chars[0]]);
+  for (let i = 0; i < chars.length - 1; i++) set.add(chars[i] + chars[i + 1]);
+  return set;
+}
 function similarity(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return 0;
   if (a.length === 0 || b.length === 0) return 0;
-  const grams = (s) => {
-    const set = /* @__PURE__ */ new Set();
-    const chars = Array.from(s);
-    if (chars.length === 1) return /* @__PURE__ */ new Set([chars[0]]);
-    for (let i = 0; i < chars.length - 1; i++) set.add(chars[i] + chars[i + 1]);
-    return set;
-  };
-  const ga = grams(a);
-  const gb = grams(b);
+  const ga = bigrams(a);
+  const gb = bigrams(b);
   if (ga.size === 0 || gb.size === 0) return 0;
   let inter = 0;
   for (const g of ga) if (gb.has(g)) inter++;
   return inter / Math.max(1, Math.min(ga.size, gb.size));
+}
+function queryCoverage(query, doc) {
+  if (typeof query !== "string" || typeof doc !== "string") return 0;
+  if (query.length === 0 || doc.length === 0) return 0;
+  const gq = bigrams(query);
+  const gd = bigrams(doc);
+  if (gq.size === 0 || gd.size === 0) return 0;
+  let inter = 0;
+  for (const g of gq) if (gd.has(g)) inter++;
+  return inter / gq.size;
 }
 var QUOTED_RE = /["“”'‘’「」『』《》]([^"“”'‘’「」『』《》]{2,40})["“”'‘’「」『』《》]/g;
 var LATIN_TERM_RE = /\b[A-Z][A-Za-z0-9_\-+.]{1,30}\b/g;
@@ -365,9 +375,10 @@ function addMemory(db, { roleId = "global", layer = "recent", content, entities 
       const mergedEntities = Array.from(/* @__PURE__ */ new Set([...existing.entities ?? [], ...entities])).slice(0, 20);
       const mergedStrength = clamp((existing.strength ?? 1) + 0.1, 0.1, 5);
       const mergedOrigin = Array.from(/* @__PURE__ */ new Set([...existing.originIds ?? [], ...originIds])).slice(-20);
+      const mergedContent = text.length > (existing.content?.length ?? 0) ? text : existing.content;
       db.prepare(
-        "UPDATE memories SET strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
-      ).run(mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
+        "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
+      ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
       replaceEntities(db, c.id, mergedEntities);
       return { id: c.id, merged: true };
     }
@@ -411,13 +422,29 @@ function adjustStrength(db, id, mode, amount) {
   db.prepare("UPDATE memories SET strength = ? WHERE id = ?").run(clamped, id);
   return clamped;
 }
+function setStrength(db, id, value) {
+  const row = db.prepare("SELECT strength FROM memories WHERE id = ?").get(id);
+  if (!row) return null;
+  const clamped = clamp(Number(value) || 0, 0.05, 5);
+  db.prepare("UPDATE memories SET strength = ? WHERE id = ?").run(clamped, id);
+  return clamped;
+}
 function archiveMemory(db, id) {
   db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(id);
 }
 function touchAccessed(db, id) {
   db.prepare("UPDATE memories SET last_accessed = ? WHERE id = ?").run(now(), id);
 }
-function searchMemories(db, query, roleIds, { decay = 0.01, limit = 8 } = {}) {
+function searchMemories(db, query, roleIds, {
+  decay = 0.01,
+  limit = 8,
+  /** Weight of the relevance term (0 = pure strength/decay, 1 = pure relevance). */
+  weight = 0.65,
+  /** Relevance floor on queryCoverage(); candidates below it are dropped. */
+  minSim = 0,
+  /** Opt-in "recent 200" fallback. Only the introspective identity probe uses it. */
+  allowFallback = false
+} = {}) {
   const q = normalizeContent(query);
   if (!q) return [];
   const roles = Array.isArray(roleIds) ? roleIds : ["global"];
@@ -437,17 +464,17 @@ function searchMemories(db, query, roleIds, { decay = 0.01, limit = 8 } = {}) {
   }
   const terms = tokenizeQuery(q);
   if (terms.length > 0) {
-    const likeSql = `SELECT m.id FROM memories m WHERE m.status = 'active' AND ${roleIn} AND m.content LIKE ? ESCAPE '\\'`;
-    for (const t of terms) {
-      try {
-        const rows2 = db.prepare(likeSql).all(`%${escapeLike(t)}%`, ...roles);
-        for (const r of rows2) candidateIds.add(r.id);
-      } catch {
-      }
+    const likeClause = terms.map(() => "m.content LIKE ? ESCAPE '!'").join(" OR ");
+    const likeSql = `SELECT m.id FROM memories m WHERE m.status = 'active' AND ${roleIn} AND (${likeClause})`;
+    try {
+      const rows2 = db.prepare(likeSql).all(...roles, ...terms.map((t) => `%${escapeLike(t)}%`));
+      for (const r of rows2) candidateIds.add(r.id);
+    } catch {
     }
   }
   let rows;
   if (candidateIds.size === 0) {
+    if (!allowFallback) return [];
     rows = db.prepare(
       `SELECT m.* FROM memories m WHERE m.status = 'active' AND ${roleIn}
        ORDER BY m.created_at DESC LIMIT 200`
@@ -458,11 +485,13 @@ function searchMemories(db, query, roleIds, { decay = 0.01, limit = 8 } = {}) {
       `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})`
     ).all(...Array.from(candidateIds));
   }
+  const w = clamp(Number(weight) || 0, 0, 1);
+  const floor = clamp(Number(minSim) || 0, 0, 1);
   const scored = rows.map((r) => {
-    const sim = similarity(q, r.content);
-    const score = (0.35 + 0.65 * sim) * (r.strength ?? 1) * timeDecay(r.created_at, decay);
+    const sim = queryCoverage(q, r.content);
+    const score = (1 - w + w * sim) * (r.strength ?? 1) * timeDecay(r.created_at, decay);
     return { ...r, entities: parseJsonList(r.entities), _score: score, _sim: sim };
-  });
+  }).filter((r) => r._sim >= floor);
   scored.sort((a, b) => b._score - a._score);
   return scored.slice(0, limit);
 }
@@ -530,7 +559,7 @@ function isSeedMemoryId(id) {
   return typeof id === "string" && /^mem_0\d\d$/.test(id);
 }
 function escapeLike(s) {
-  return s.replace(/[\\%_]/g, (c) => "\\" + c);
+  return s.replace(/[!%_]/g, (c) => "!" + c);
 }
 function tokenizeQuery(text) {
   const out = /* @__PURE__ */ new Set();
@@ -566,6 +595,7 @@ import { tmpdir } from "node:os";
 
 // src/retrieval.js
 var LAYER_PRIORITY = { core: 0, weekly: 1, recent: 2, diffusion: 3 };
+var DEFAULT_MIN_SIM = 0.3;
 var INTROSPECTION_RE = /(我是谁|你是谁|我的角色|我的身份|我是什么|我是干什么|我是什么人|我的存在|我的使命|我为什么在这里|我是做什么)/;
 var IDENTITY_ENTITIES = ["\u8D5B\u535A\u6218\u53CB", "\u966A\u4F34", "\u89D2\u8272", "\u8EAB\u4EFD", "\u5B58\u5728\u610F\u4E49", "\u6218\u53CB", "\u6E29\u6696", "\u672C\u6E90", "\u5951\u7EA6", "\u591A\u89D2\u8272\u534F\u4F5C"];
 function retrieveForPrompt(db, {
@@ -574,15 +604,26 @@ function retrieveForPrompt(db, {
   decay = 0.01,
   enableGraphRecall = true,
   maxTokens = 1200,
-  limit = 8
+  limit = 8,
+  /** Weight of the relevance term in the score (evolution tunes this). */
+  weight = 0.65,
+  /** Relevance floor; the introspective probe bypasses it by design. */
+  minSim = DEFAULT_MIN_SIM
 } = {}) {
   if (!query) return null;
-  const primary = searchMemories(db, query, roleIds, { decay, limit });
+  const introspective = INTROSPECTION_RE.test(query);
+  const primary = searchMemories(db, query, roleIds, {
+    decay,
+    limit,
+    weight,
+    minSim: introspective ? 0 : minSim,
+    allowFallback: introspective
+  });
   const primaryIds = primary.map((m) => m.id);
-  const floor = INTROSPECTION_RE.test(query) ? searchByEntities(db, IDENTITY_ENTITIES, roleIds, { limit: 4, excludeIds: primaryIds }) : [];
+  const floor = introspective ? searchByEntities(db, IDENTITY_ENTITIES, roleIds, { limit: 4, excludeIds: primaryIds }) : [];
   let diffused = [];
   if (enableGraphRecall && primary.length > 0) {
-    const topEntities = primary.slice(0, 3).flatMap((m) => m.entities ?? []).slice(0, 12);
+    const topEntities = primary.slice(0, 3).flatMap((m) => m.entities ?? []).filter((e) => isMeaningfulEntity(e)).slice(0, 12);
     diffused = graphExpand(db, topEntities, roleIds, {
       confidence: 0.8,
       limit: 2,
@@ -648,6 +689,29 @@ function isNonCapturable(source, text) {
   if (head.includes("<memory-recall>")) return true;
   return false;
 }
+var INJECTED_BLOCKS = [
+  /<system-reminder>[\s\S]*?<\/system-reminder>/g,
+  /<memory-recall>[\s\S]*?<\/memory-recall>/g
+];
+var INJECTED_TAIL = [
+  // DSH appends a full runtime snapshot after the real user text. The marker
+  // is distinctive enough that a genuine message is unlikely to contain it.
+  /Current runtime context\. This snapshot supersedes[\s\S]*$/,
+  // Plugin-injected guidance appended after the user text (e.g. the
+  // "batching-guidance" block). Seen in the live store as a 11.7 KB "memory".
+  /\[Plugin context from [\s\S]*$/,
+  /Time sampled while preparing[^\n]*/g,
+  /Browser time zone for this request:[^\n]*/g,
+  /\[model changed:[^\]]*\]/g
+];
+function stripInjectedContext(text) {
+  let out = String(text ?? "");
+  for (const re of INJECTED_BLOCKS) out = out.replace(re, " ");
+  for (const re of INJECTED_TAIL) out = out.replace(re, " ");
+  return out.replace(/\s+/g, " ").trim();
+}
+var MAX_CAPTURE_CHARS = 1500;
+var MAX_EXTRACT_CHARS = 4e3;
 var CaptureTracker = class {
   constructor({ store, roleOf, logger, extractor }) {
     this.store = store;
@@ -668,10 +732,12 @@ var CaptureTracker = class {
       const state = this.turn.get(sessionId);
       if (!state) return false;
       const data = event.data;
-      const text = (data?.content ?? []).filter((b) => b?.type === "text" && typeof b?.text === "string").map((b) => b.text).join("\n");
-      if (!text.trim()) return false;
+      const raw = (data?.content ?? []).filter((b) => b?.type === "text" && typeof b?.text === "string").map((b) => b.text).join("\n");
+      if (!raw.trim()) return false;
       const source = data?.source;
-      if (isNonCapturable(source, text)) return false;
+      if (isNonCapturable(source, raw)) return false;
+      const text = stripInjectedContext(raw);
+      if (!text) return false;
       if (t === "user/message") state.user.push(text);
       else state.assistant.push(text);
       return false;
@@ -700,16 +766,21 @@ var CaptureTracker = class {
     const primary = userText.length >= 8 ? userText : assistantText || userText;
     const source = normalizeContent(primary);
     if (!source || source.length < 8) return;
+    const excerpt = source.length > MAX_EXTRACT_CHARS ? source.slice(0, MAX_EXTRACT_CHARS) : source;
     let extracted = null;
     if (typeof this.extractor === "function") {
       try {
-        extracted = await this.extractor(source, { userText, assistantText, sessionId });
+        extracted = await this.extractor(excerpt, { userText, assistantText, sessionId });
       } catch {
       }
     }
-    const entities = (extracted?.entities?.length ? extracted.entities : extractEntities(source)).slice(0, 16);
-    const layer = extracted?.layer ?? inferLayer(source);
-    const content = normalizeContent(extracted?.content ?? source);
+    const entities = (extracted?.entities?.length ? extracted.entities : extractEntities(excerpt)).slice(0, 16);
+    let layer = extracted?.layer ?? inferLayer(source);
+    let content = normalizeContent(extracted?.content ?? excerpt);
+    if (content.length > MAX_CAPTURE_CHARS) {
+      content = content.slice(0, MAX_CAPTURE_CHARS) + "\u2026";
+      if (layer === "core") layer = "weekly";
+    }
     const res = this.store({ roleId, layer, content, entities });
     if (res?.merged) {
       this.logger?.info?.(
@@ -767,20 +838,24 @@ var FeedbackManager = class {
    * repeat correction: keep the damped value and restart the timer.
    */
   damp(memoryId) {
-    const current = adjustStrength(this.db, memoryId, "multiply", this.dampFactor);
-    if (current === null) return false;
-    const pending = this.pending.get(memoryId);
-    if (pending?.timer) clearTimeout(pending.timer);
-    const target = current / this.dampFactor;
+    const row = this.db.prepare("SELECT strength FROM memories WHERE id = ?").get(memoryId);
+    if (!row) return false;
+    const existing = this.pending.get(memoryId);
+    if (existing?.timer) clearTimeout(existing.timer);
+    const original = existing ? existing.original : Number(row.strength) || 1;
+    const damped = adjustStrength(this.db, memoryId, "multiply", this.dampFactor);
+    if (damped === null) return false;
     const timer = setTimeout(() => {
+      const entry = this.pending.get(memoryId);
+      if (!entry || entry.timer !== timer) return;
       this.pending.delete(memoryId);
-      if (!this.pending.has(memoryId)) {
-        adjustStrength(this.db, memoryId, "multiply", 1 / this.dampFactor);
-      }
+      setStrength(this.db, memoryId, original);
     }, this.recoveryMs);
     if (typeof timer?.unref === "function") timer.unref();
-    this.pending.set(memoryId, { original: target, timer });
-    this.logger?.info?.(`dsh-xiaofei-memory: damped memory ${String(memoryId).slice(-6)}`);
+    this.pending.set(memoryId, { original, timer });
+    this.logger?.info?.(
+      `dsh-xiaofei-memory: damped memory ${String(memoryId).slice(-6)} (${(Number(row.strength) || 0).toFixed(2)} -> ${damped.toFixed(2)})`
+    );
     return true;
   }
   /** Whether a memory is currently under a correction penalty. */
@@ -820,6 +895,15 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
   stats.scanned = all.length;
   const threshold = distillThreshold(all.length);
   stats.threshold = threshold;
+  const canDistill = typeof summarize === "function";
+  stats.distillSkipped = canDistill ? null : "no-summarizer";
+  if (!canDistill) {
+    purgeArchived(db);
+    vacuumAndOptimize(db);
+    stats.vacuumed = true;
+    logger?.info?.("dsh-xiaofei-memory: nightly sleep: distillation skipped (no summarizer), vacuum done");
+    return stats;
+  }
   for (const m of all) {
     for (const e of m.entities ?? []) {
       if (!isMeaningfulEntity(e)) continue;
@@ -1224,6 +1308,14 @@ function registerCoreMemory({ ctx, db, config, resolveRoleIds, logger }) {
 }
 
 // src/console.js
+function allRoleIds(db) {
+  try {
+    const roles = db.prepare("SELECT DISTINCT role_id FROM memories").all().map((r) => r.role_id);
+    return roles.length > 0 ? roles : ["global"];
+  } catch {
+    return ["global"];
+  }
+}
 function getMemoryStats(db) {
   const byLayer = { core: 0, weekly: 0, recent: 0 };
   const byRole = {};
@@ -1243,7 +1335,7 @@ function getMemoryStats(db) {
   };
 }
 function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }) {
-  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
+  const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : allRoleIds(db);
   const rows = searchMemories(db, query, roleIds, { decay, limit });
   return rows.map((r) => ({
     id: r.id,
@@ -1260,10 +1352,11 @@ function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }
 function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
   return retrieveForPrompt(db, {
     query,
-    roleIds: roleId && roleId !== "all" ? [roleId, "global"] : ["global"],
+    roleIds: roleId && roleId !== "all" ? [roleId, "global"] : allRoleIds(db),
     enableGraphRecall: true,
     maxTokens,
-    limit: 8
+    limit: 8,
+    weight: loadEvolution(db).retrievalWeight
   });
 }
 async function triggerNightlySleep(db, { summarize, logger } = {}) {
@@ -1355,7 +1448,7 @@ function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChar
 }
 function listSoulMemories(db) {
   const rows = db.prepare(
-    "SELECT id, role_id, layer, content FROM memories WHERE id LIKE 'mem_%' ORDER BY id ASC LIMIT 10"
+    "SELECT id, role_id, layer, content FROM memories WHERE id GLOB 'mem_0[0-9][0-9]' ORDER BY id ASC LIMIT 10"
   ).all();
   return rows;
 }
@@ -1402,6 +1495,9 @@ var Config = z.object({
   memoryIndexLimit: z.number().default(40),
   /** Max primary recalls per injection. */
   recallLimit: z.number().default(8),
+  /** Relevance floor for auto-injection: share of the query's bigrams that must
+   *  appear in a memory before it is injected (0 disables the floor). */
+  recallMinSim: z.number().default(0.3),
   /** Role registry for the management console. Volatile = editable in the console. */
   roles: z.array(z.object({
     id: z.string().required(),
@@ -1414,9 +1510,36 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261114022834" : "dev";
+var BUILD_STAMP = true ? "20261114061320" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
+var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
+function readRecallStats(db) {
+  try {
+    const raw = metaGet(db, RECALL_STATS_KEY);
+    if (!raw) return { count: 0, corrections: 0 };
+    const parsed = JSON.parse(raw);
+    return {
+      count: Math.max(0, Number(parsed?.count) || 0),
+      corrections: Math.max(0, Number(parsed?.corrections) || 0)
+    };
+  } catch {
+    return { count: 0, corrections: 0 };
+  }
+}
+function bumpRecallStats(db, delta = {}) {
+  const addCount = Math.max(0, Number(delta.count) || 0);
+  const addCorrections = Math.max(0, Number(delta.corrections) || 0);
+  if (addCount === 0 && addCorrections === 0) return;
+  try {
+    const current = readRecallStats(db);
+    metaSet(db, RECALL_STATS_KEY, JSON.stringify({
+      count: current.count + addCount,
+      corrections: current.corrections + addCorrections
+    }));
+  } catch {
+  }
+}
 function defaultDbPath() {
   const home = process.env.DSH_HOME || join(homedir(), ".dsh");
   return join(home, "plugin-data", "dsh-xiaofei-memory", "memory.sqlite");
@@ -1440,9 +1563,10 @@ async function apply(ctx, config) {
   const logger = ctx.logger;
   logger?.info?.(`dsh-xiaofei-memory: opened ${dbPath} (${countMemories(db)} active memories)`);
   const feedback = new FeedbackManager({ db, dampFactor: config.dampFactor, logger });
+  const sessionRole = /* @__PURE__ */ new Map();
   const tracker = new CaptureTracker({
     store: (args) => addMemory(db, args),
-    roleOf: () => config.roleId,
+    roleOf: (sid) => sessionRole.get(sid) ?? config.roleId,
     logger,
     extractor: config.useLlmExtraction ? makeLlmExtractor(buildLlmCaller(ctx), { model: config.extractionModel }) : null
   });
@@ -1463,6 +1587,8 @@ async function apply(ctx, config) {
         query,
         roleIds: [roleId, "global"],
         decay: evolution.timeDecay,
+        weight: evolution.retrievalWeight,
+        minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,
         limit: config.recallLimit
@@ -1470,7 +1596,12 @@ async function apply(ctx, config) {
       if (!recall) return decision;
       const sid = agent?.session?.id ?? "anon";
       lastInjected.set(sid, recall.injectedIds);
+      if (lastInjected.size > 500) {
+        const oldest = lastInjected.keys().next().value;
+        if (oldest !== void 0) lastInjected.delete(oldest);
+      }
       for (const id of recall.injectedIds) touchAccessed(db, id);
+      bumpRecallStats(db, { count: recall.injectedIds.length });
       const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
       const memoryMessage = createUserMessage({
         content: [{ type: "text", text: recall.text }],
@@ -1491,6 +1622,11 @@ async function apply(ctx, config) {
   ctx.on("session/event", (session, event) => {
     if (session?.header?.origin === "subagent") return;
     const sid = session?.id ?? "anon";
+    sessionRole.set(sid, session?.header?.roleId ?? config.roleId);
+    if (sessionRole.size > 500) {
+      const oldest = sessionRole.keys().next().value;
+      if (oldest !== void 0) sessionRole.delete(oldest);
+    }
     const flushed = tracker.onEvent(sid, event);
     if (!flushed) return;
     void flushed;
@@ -1506,6 +1642,7 @@ async function apply(ctx, config) {
         const ids = lastInjected.get(sid);
         if (!ids || ids.length === 0) return;
         for (const id of ids) feedback.damp(id);
+        bumpRecallStats(db, { corrections: ids.length });
         logger?.info?.(`dsh-xiaofei-memory: correction via ${toolName}, damped ${ids.length} recalled memories`);
       } catch {
       }
@@ -1549,13 +1686,13 @@ async function apply(ctx, config) {
     try {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
       const stats = await runNightlySleep(db, { summarize, logger });
-      const recallStats = JSON.parse(metaGet(db, RECALL_STATS_KEY) ?? '{"count":0,"corrections":0}');
+      const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
         recallCorrections: recallStats.corrections
       });
       metaSet(db, LAST_SLEEP_KEY, Date.now());
-      metaSet(db, RECALL_STATS_KEY, '{"count":0,"corrections":0}');
+      metaSet(db, RECALL_STATS_KEY, EMPTY_RECALL_STATS);
       logger?.info?.(`dsh-xiaofei-memory: nightly sleep done (${JSON.stringify(stats)}), evolution changed=${evolved.changed}`);
     } catch (e) {
       try {
@@ -1578,10 +1715,13 @@ async function apply(ctx, config) {
   }, configWriter, logger });
   const core = {
     retrieve(query, opts = {}) {
+      const evolution = loadEvolution(db);
       return retrieveForPrompt(db, {
         query,
         roleIds: opts.roleIds ?? [config.roleId, "global"],
-        decay: loadEvolution(db).timeDecay,
+        decay: evolution.timeDecay,
+        weight: evolution.retrievalWeight,
+        minSim: opts.minSim ?? config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: opts.maxTokens ?? config.maxRecallTokens,
         limit: opts.limit ?? config.recallLimit
@@ -1848,10 +1988,13 @@ async function apply(ctx, config) {
       render: (_args, v) => [{ type: "text", text: v?.ok ? v.text || "\uFF08\u6CA1\u6709\u547D\u4E2D\u8BB0\u5FC6\uFF09" : "\u68C0\u7D22\u5931\u8D25\u3002" }]
     },
     async execute(args) {
+      const evolution = loadEvolution(db);
       const recall = retrieveForPrompt(db, {
         query: args?.query,
         roleIds: [config.roleId, "global"],
-        decay: loadEvolution(db).timeDecay,
+        decay: evolution.timeDecay,
+        weight: evolution.retrievalWeight,
+        minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,
         limit: args?.limit ?? config.recallLimit

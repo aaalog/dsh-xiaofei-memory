@@ -40,6 +40,20 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
   const threshold = distillThreshold(all.length);
   stats.threshold = threshold;
 
+  // Distillation replaces a group of memories with ONE summary and then purges
+  // the originals. A deterministic truncation is not a summary, so without an
+  // LLM summarizer this pass would destroy more information than it creates.
+  // Skip it entirely; the vacuum below still reclaims space.
+  const canDistill = typeof summarize === "function";
+  stats.distillSkipped = canDistill ? null : "no-summarizer";
+  if (!canDistill) {
+    purgeArchived(db);
+    vacuumAndOptimize(db);
+    stats.vacuumed = true;
+    logger?.info?.("dsh-xiaofei-memory: nightly sleep: distillation skipped (no summarizer), vacuum done");
+    return stats;
+  }
+
   for (const m of all) {
     for (const e of m.entities ?? []) {
       if (!isMeaningfulEntity(e)) continue;

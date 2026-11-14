@@ -40,26 +40,50 @@ export function tokenEstimate(text) {
   return cjk + latin;
 }
 
+/** Bigram set of a string (a single character is its own gram). */
+function bigrams(s) {
+  const set = new Set();
+  const chars = Array.from(s);
+  if (chars.length === 1) return new Set([chars[0]]);
+  for (let i = 0; i < chars.length - 1; i++) set.add(chars[i] + chars[i + 1]);
+  return set;
+}
+
 /**
  * Deterministic, cheap text similarity in [0,1] using bigram overlap.
  * Good enough for dedup and conflict detection without an embedding model.
+ *
+ * The denominator is `min(|a|,|b|)` — "how much of the shorter text appears in
+ * the longer one". That is what dedup/conflict detection wants, but it is the
+ * wrong signal for ranking a short query against a long memory: two shared
+ * common bigrams can look like a 0.6 match. Retrieval uses queryCoverage().
  */
 export function similarity(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return 0;
   if (a.length === 0 || b.length === 0) return 0;
-  const grams = (s) => {
-    const set = new Set();
-    const chars = Array.from(s);
-    if (chars.length === 1) return new Set([chars[0]]);
-    for (let i = 0; i < chars.length - 1; i++) set.add(chars[i] + chars[i + 1]);
-    return set;
-  };
-  const ga = grams(a);
-  const gb = grams(b);
+  const ga = bigrams(a);
+  const gb = bigrams(b);
   if (ga.size === 0 || gb.size === 0) return 0;
   let inter = 0;
   for (const g of ga) if (gb.has(g)) inter++;
   return inter / Math.max(1, Math.min(ga.size, gb.size));
+}
+
+/**
+ * Query coverage in [0,1]: the share of the QUERY's bigrams that appear in the
+ * document. The denominator is the query, so a long memory cannot inflate the
+ * score and an unrelated query scores ~0. This is the ranking signal retrieval
+ * uses, and the quantity the relevance floor is expressed in.
+ */
+export function queryCoverage(query, doc) {
+  if (typeof query !== "string" || typeof doc !== "string") return 0;
+  if (query.length === 0 || doc.length === 0) return 0;
+  const gq = bigrams(query);
+  const gd = bigrams(doc);
+  if (gq.size === 0 || gd.size === 0) return 0;
+  let inter = 0;
+  for (const g of gq) if (gd.has(g)) inter++;
+  return inter / gq.size;
 }
 
 const QUOTED_RE = /["“”'‘’「」『』《》]([^"“”'‘’「」『』《》]{2,40})["“”'‘’「」『』《》]/g;
