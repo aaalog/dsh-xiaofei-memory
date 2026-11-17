@@ -69,6 +69,10 @@ const INJECTED_TAIL = [
   /\[Plugin context from [\s\S]*$/,
   /Time sampled while preparing[^\n]*/g,
   /Browser time zone for this request:[^\n]*/g,
+  // DSH appends this elapsed-time trailer after the runtime snapshot. Anchored
+  // at line start and narrowed to the real format, so a user quoting the phrase
+  // keeps the rest of their line.
+  /^[ \t]*Elapsed since the preceding (?:model-visible message|step context): (?:unavailable|\d[^\n]*)/gm,
   /\[model changed:[^\]]*\]/g,
 ];
 

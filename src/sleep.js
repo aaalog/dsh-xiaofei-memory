@@ -30,7 +30,7 @@ export function distillThreshold(size) {
 export async function runNightlySleep(db, { summarize, layer = "recent", logger } = {}) {
   const stats = {
     distilledGroups: 0, distilledMemories: 0, archived: 0, vacuumed: false,
-    threshold: 0, scanned: 0, skippedEntities: 0, details: [],
+    threshold: 0, scanned: 0, skippedEntities: 0, skippedGroups: 0, details: [],
   };
 
   // Group recent memories by shared entity, ignoring noise entities.
@@ -63,8 +63,15 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
     }
   }
 
+  // A memory usually carries several entities, so the same rows can land in
+  // several groups. Once a group has been distilled its rows are archived;
+  // skipping archived ids keeps the second group from writing a duplicate
+  // summary and from double-counting `archived`.
+  const archivedIds = new Set();
+
   for (const [entity, memories] of groups) {
-    const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values());
+    const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values())
+      .filter((m) => !archivedIds.has(m.id));
     if (unique.length <= threshold) { stats.skippedEntities++; continue; }
     const ids = unique.map((m) => m.id);
     // Build a distilled summary into core, then archive the originals.
@@ -75,10 +82,21 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
       .map((m) => m.content);
     let summary = null;
     if (typeof summarize === "function") {
-      try { summary = await summarize(texts); } catch { /* heuristic fallback */ }
+      try { summary = await summarize(texts); } catch { /* skip this group */ }
     }
-    const content = normalizeContent(summary || heuristicSummary(texts));
-    if (!content) continue;
+    // A summary that did not come back must NOT fall back to a truncation: the
+    // originals are archived and then physically purged below, so a lossy
+    // stand-in would destroy more than it preserves. Skip the group instead.
+    // Accept only a string. A non-string (an object, or a provider that returns
+    // a structured reply) would be coerced to "[object Object]" by
+    // normalizeContent, pass the emptiness check, and then the originals would
+    // be archived and purged in favour of garbage.
+    const content = typeof summary === "string" ? normalizeContent(summary) : "";
+    if (!content) {
+      stats.skippedGroups++;
+      logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
+      continue;
+    }
     const res = addMemory(db, {
       roleId: unique[0].role_id ?? "global",
       layer: "core",
@@ -86,11 +104,16 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
       entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
       originIds: ids,
       strength: 1.0,
+      // The summary must be its own row: merging it into a row from `ids` used
+      // to hand back that id, which the archive loop then archived and purged.
+      noMerge: true,
     });
     for (const id of ids) {
-      // Never distil away the seeded soul memories.
-      if (isSeedMemoryId(id)) continue;
+      // Never distil away the seeded soul memories, and never archive the row
+      // the summary landed in (only reachable if `noMerge` is ever lost).
+      if (isSeedMemoryId(id) || id === res?.id) continue;
       archiveMemory(db, id);
+      archivedIds.add(id);
       stats.archived++;
     }
     stats.distilledGroups++;
@@ -112,13 +135,6 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
   vacuumAndOptimize(db);
   stats.vacuumed = true;
   return stats;
-}
-
-function heuristicSummary(texts) {
-  const joined = texts.join("；");
-  const chars = Array.from(joined);
-  if (chars.length <= SUMMARY_MAX_CHARS) return joined;
-  return chars.slice(0, SUMMARY_MAX_CHARS).join("") + "…";
 }
 
 export { DISTILL_MIN_THRESHOLD, DISTILL_RATIO, DISTILL_MAX_THRESHOLD, SUMMARY_MAX_CHARS };

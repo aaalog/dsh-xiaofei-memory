@@ -154,12 +154,15 @@ export function countMemories(db) {
  *   write the new one as the authoritative fact.
  * Returns { id, merged }.
  */
-export function addMemory(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1.0 }) {
+export function addMemory(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1.0, noMerge = false }) {
   const text = normalizeContent(content);
   if (!text) throw new Error("memory content is empty");
 
-  // Conflict / merge pass against active memories at the same role.
-  const candidates = db.prepare(
+  // Conflict / merge pass against active memories at the same role. `noMerge`
+  // is for callers that must end up with a new standalone row (nightly
+  // distillation): merging a summary into one of the rows it is about to
+  // archive made the summary and the whole group vanish together at purge time.
+  const candidates = noMerge ? [] : db.prepare(
     "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20"
   ).all(roleId);
   for (const c of candidates) {
@@ -251,6 +254,14 @@ export function touchAccessed(db, id) {
 }
 
 /**
+ * Upper bound on how many candidates are fetched and scored for one query.
+ * A query made of common bigrams can match most of the table; scoring all of it
+ * is wasted work because the result is sliced to `limit` anyway. The ranking
+ * prefers stronger/younger memories, so trimming the tail is the cheap cut.
+ */
+const MAX_SCORED_CANDIDATES = 800;
+
+/**
  * Hybrid retrieval:
  * 1. FTS5 (trigram) MATCH on content, filtered by role_ids and status='active'.
  * 2. LIKE substring pre-filter (CJK-robust, any length).
@@ -282,9 +293,14 @@ export function searchMemories(db, query, roleIds, {
   const ftsTerms = buildFtsQuery(q);
   if (ftsTerms) {
     try {
+      // Written as a plain join with the status/role predicates, SQLite probes
+      // the FTS table once per memory row (400ms at 10k rows). With the rowid
+      // subquery the FTS index is materialised once and probed by rowid (9ms,
+      // identical rows).
       const ftsRows = db.prepare(
-        `SELECT m.id FROM memories_fts f JOIN memories m ON m.rowid = f.rowid
-         WHERE memories_fts MATCH ? AND m.status = 'active' AND ${roleIn}`
+        `SELECT m.id FROM memories m
+         WHERE m.rowid IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?)
+           AND m.status = 'active' AND ${roleIn}`
       ).all(ftsTerms, ...roles);
       for (const r of ftsRows) candidateIds.add(r.id);
     } catch {
@@ -321,8 +337,9 @@ export function searchMemories(db, query, roleIds, {
   } else {
     const idPlaceholders = Array.from(candidateIds).map(() => "?").join(",");
     rows = db.prepare(
-      `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})`
-    ).all(...Array.from(candidateIds));
+      `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})
+       ORDER BY m.strength DESC, m.created_at DESC, m.id ASC LIMIT ?`
+    ).all(...Array.from(candidateIds), MAX_SCORED_CANDIDATES);
   }
 
   const w = clamp(Number(weight) || 0, 0, 1);

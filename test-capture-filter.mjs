@@ -114,5 +114,21 @@ check("plugin-context block stripped",
   JSON.stringify(out.map((s) => String(s.content))));
 check("'你是谁' alone is too short to store", out.length === 0, `captured=${out.length}`);
 
+console.log("== 9. elapsed-time trailer must be stripped ==");
+out = await runTurn([
+  userMsg("帮我把这个接口改成 POST 方式\nElapsed since the preceding model-visible message: 12m 27s."),
+]);
+check("elapsed trailer stripped",
+  !out.some((s) => String(s.content).includes("Elapsed since the preceding")),
+  JSON.stringify(out.map((s) => String(s.content))));
+check("typed text preserved",
+  out.some((s) => String(s.content).includes("改成 POST 方式")));
+
+console.log("== 10. discussing the phrase must not eat the user's line ==");
+out = await runTurn([userMsg("为什么要显示 Elapsed since the preceding model-visible message 呢？后面我还要加日志")]);
+check("mid-line mention is preserved",
+  out.some((s) => String(s.content).includes("后面我还要加日志")),
+  JSON.stringify(out.map((s) => String(s.content))));
+
 console.log("\nRESULT: " + pass + " passed, " + fail + " failed");
 process.exit(fail === 0 ? 0 : 1);

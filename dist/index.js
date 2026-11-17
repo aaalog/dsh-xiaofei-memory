@@ -362,10 +362,10 @@ function countMemories(db) {
   const row = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE status = 'active'").get();
   return row ? row.n : 0;
 }
-function addMemory(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1 }) {
+function addMemory(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1, noMerge = false }) {
   const text = normalizeContent(content);
   if (!text) throw new Error("memory content is empty");
-  const candidates = db.prepare(
+  const candidates = noMerge ? [] : db.prepare(
     "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20"
   ).all(roleId);
   for (const c of candidates) {
@@ -435,6 +435,7 @@ function archiveMemory(db, id) {
 function touchAccessed(db, id) {
   db.prepare("UPDATE memories SET last_accessed = ? WHERE id = ?").run(now(), id);
 }
+var MAX_SCORED_CANDIDATES = 800;
 function searchMemories(db, query, roleIds, {
   decay = 0.01,
   limit = 8,
@@ -455,8 +456,9 @@ function searchMemories(db, query, roleIds, {
   if (ftsTerms) {
     try {
       const ftsRows = db.prepare(
-        `SELECT m.id FROM memories_fts f JOIN memories m ON m.rowid = f.rowid
-         WHERE memories_fts MATCH ? AND m.status = 'active' AND ${roleIn}`
+        `SELECT m.id FROM memories m
+         WHERE m.rowid IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?)
+           AND m.status = 'active' AND ${roleIn}`
       ).all(ftsTerms, ...roles);
       for (const r of ftsRows) candidateIds.add(r.id);
     } catch {
@@ -482,8 +484,9 @@ function searchMemories(db, query, roleIds, {
   } else {
     const idPlaceholders = Array.from(candidateIds).map(() => "?").join(",");
     rows = db.prepare(
-      `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})`
-    ).all(...Array.from(candidateIds));
+      `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})
+       ORDER BY m.strength DESC, m.created_at DESC, m.id ASC LIMIT ?`
+    ).all(...Array.from(candidateIds), MAX_SCORED_CANDIDATES);
   }
   const w = clamp(Number(weight) || 0, 0, 1);
   const floor = clamp(Number(minSim) || 0, 0, 1);
@@ -702,6 +705,10 @@ var INJECTED_TAIL = [
   /\[Plugin context from [\s\S]*$/,
   /Time sampled while preparing[^\n]*/g,
   /Browser time zone for this request:[^\n]*/g,
+  // DSH appends this elapsed-time trailer after the runtime snapshot. Anchored
+  // at line start and narrowed to the real format, so a user quoting the phrase
+  // keeps the rest of their line.
+  /^[ \t]*Elapsed since the preceding (?:model-visible message|step context): (?:unavailable|\d[^\n]*)/gm,
   /\[model changed:[^\]]*\]/g
 ];
 function stripInjectedContext(text) {
@@ -888,6 +895,7 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
     threshold: 0,
     scanned: 0,
     skippedEntities: 0,
+    skippedGroups: 0,
     details: []
   };
   const groups = /* @__PURE__ */ new Map();
@@ -912,8 +920,9 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
       if (arr.length <= 40) arr.push(m);
     }
   }
+  const archivedIds = /* @__PURE__ */ new Set();
   for (const [entity, memories] of groups) {
-    const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values());
+    const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values()).filter((m) => !archivedIds.has(m.id));
     if (unique.length <= threshold) {
       stats.skippedEntities++;
       continue;
@@ -927,19 +936,27 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
       } catch {
       }
     }
-    const content = normalizeContent(summary || heuristicSummary(texts));
-    if (!content) continue;
+    const content = typeof summary === "string" ? normalizeContent(summary) : "";
+    if (!content) {
+      stats.skippedGroups++;
+      logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
+      continue;
+    }
     const res = addMemory(db, {
       roleId: unique[0].role_id ?? "global",
       layer: "core",
       content,
       entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
       originIds: ids,
-      strength: 1
+      strength: 1,
+      // The summary must be its own row: merging it into a row from `ids` used
+      // to hand back that id, which the archive loop then archived and purged.
+      noMerge: true
     });
     for (const id of ids) {
-      if (isSeedMemoryId(id)) continue;
+      if (isSeedMemoryId(id) || id === res?.id) continue;
       archiveMemory(db, id);
+      archivedIds.add(id);
       stats.archived++;
     }
     stats.distilledGroups++;
@@ -959,12 +976,6 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
   vacuumAndOptimize(db);
   stats.vacuumed = true;
   return stats;
-}
-function heuristicSummary(texts) {
-  const joined = texts.join("\uFF1B");
-  const chars = Array.from(joined);
-  if (chars.length <= SUMMARY_MAX_CHARS) return joined;
-  return chars.slice(0, SUMMARY_MAX_CHARS).join("") + "\u2026";
 }
 
 // src/evolution.js
@@ -1510,7 +1521,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261114061320" : "dev";
+var BUILD_STAMP = true ? "20261117073526" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

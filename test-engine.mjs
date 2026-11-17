@@ -46,6 +46,56 @@ addMemory(db, { roleId: "global", layer: "recent", content: "生产环境最终�
 const twoChar = searchMemories(db, "部署", ["global"], { limit: 8 });
 check("2-char CJK query hits via LIKE", twoChar.length > 0 && twoChar[0].content.includes("部署"), `n=${twoChar.length}`);
 
+console.log("== 2d. FTS path (3+ chars) and role filter ==");
+addMemory(db, { roleId: "global", layer: "recent", content: "数据库迁移脚本已经备份到对象存储，回滚步骤写在 runbook 里。" });
+const ftsHit = searchMemories(db, "数据库迁移", ["global"], { limit: 8 });
+check("FTS phrase query finds the row", ftsHit.some((r) => r.content.includes("数据库迁移")), `n=${ftsHit.length}`);
+addMemory(db, { roleId: "work-assistant", layer: "recent", content: "数据库迁移由开发A负责执行和复核。" });
+const ftsScoped = searchMemories(db, "数据库迁移", ["global"], { limit: 20 });
+check("role filter still applied on the FTS path", !ftsScoped.some((r) => r.content.includes("开发A")), `n=${ftsScoped.length}`);
+
+const archFact = addMemory(db, { roleId: "global", layer: "recent", content: "归档测试：数据库迁移计划书草案。" });
+db.prepare("UPDATE memories SET status='archived' WHERE id=?").run(archFact.id);
+const ftsArch = searchMemories(db, "数据库迁移", ["global"], { limit: 20 });
+check("archived rows excluded on the FTS path", !ftsArch.some((r) => r.id === archFact.id), `n=${ftsArch.length}`);
+
+const ftsMulti = searchMemories(db, "数据库迁移", ["global", "work-assistant"], { limit: 20 });
+check("multi-role query spans both namespaces",
+  ftsMulti.some((r) => r.role_id === "global") && ftsMulti.some((r) => r.role_id === "work-assistant"),
+  `n=${ftsMulti.length}`);
+
+console.log("== 2e. the FTS pre-filter must stay a rowid subquery ==");
+const seenSql = [];
+const originalPrepare = db.prepare.bind(db);
+let spyOk = false;
+try {
+  db.prepare = (sql) => { seenSql.push(String(sql)); return originalPrepare(sql); };
+  spyOk = db.prepare !== originalPrepare;
+} catch { spyOk = false; }
+if (spyOk) {
+  try { searchMemories(db, "数据库迁移", ["global"], { limit: 8 }); }
+  finally { db.prepare = originalPrepare; }
+  check("FTS pre-filter uses rowid IN (SELECT rowid ...)",
+    seenSql.some((s) => /rowid IN \(SELECT rowid FROM memories_fts/.test(s)),
+    `${seenSql.length} statements seen`);
+} else {
+  check("prepare() spy unavailable (skipped)", true, "runtime does not allow re-binding prepare");
+}
+
+console.log("== 2f. candidate cap: >800 candidates still returns the strongest match ==");
+const capDir = join(tmpdir(), `dsh-xmf-cap-${Date.now()}`);
+const capDb = openMemoryDb(join(capDir, "cap.sqlite"));
+const insCap = capDb.prepare("INSERT INTO memories (id, role_id, layer, content, strength, created_at, status) VALUES (?, 'global', 'recent', ?, ?, ?, 'active')");
+capDb.exec("BEGIN");
+for (let i = 0; i < 900; i++) insCap.run("cap_" + i, "服务器缓存相关的第" + i + "条记录", 1.0, Date.now() - i * 1000);
+insCap.run("cap_strong", "服务器缓存层的高价值方案：接入两级缓存并预热。", 5.0, Date.now());
+capDb.exec("COMMIT");
+const capped = searchMemories(capDb, "服务器缓存", ["global"], { limit: 8 });
+check("capped search returns results", capped.length > 0, `n=${capped.length}`);
+check("strongest relevant memory survives the cap", capped.some((r) => r.id === "cap_strong"), capped.map((r) => r.id).join(","));
+closeMemoryDb(capDb);
+try { rmSync(capDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
 console.log("== 3. Role isolation (PRD acceptance #2) ==");
 const isolated = retrieveForPrompt(db, { query: "负反馈 试错 进化", roleIds: ["global"], maxTokens: 1200, limit: 8 });
 // mem_004 (work-assistant) must NOT appear in a global-only recall.
