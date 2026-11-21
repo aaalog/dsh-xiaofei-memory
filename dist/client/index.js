@@ -231,7 +231,7 @@ var styles_default = `/* dsh-xiaofei-memory management console styles */
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
-var BUILD_STAMP = true ? "20261121014213" : "dev";
+var BUILD_STAMP = true ? "20261121022626" : "dev";
 function useBuildMismatch() {
   const [host, setHost] = React.useState(null);
   React.useEffect(() => {
@@ -269,7 +269,6 @@ async function callBridge(op, args = {}) {
   return data.result;
 }
 function apply(ctx) {
-  window.__ctx__ = ctx;
   try {
     injectCss();
   } catch {
@@ -409,15 +408,7 @@ function softService(ctx, name) {
     return void 0;
   }
 }
-function probe(msg) {
-  try {
-    const ctx = window.__ctx__;
-    if (!ctx) return;
-    const remote = ctx.remote || (typeof ctx.get === "function" ? ctx.get("remote") : void 0);
-    const svc = remote && remote.memoryConsole;
-    if (svc && typeof svc.probe === "function") svc.probe(msg);
-  } catch {
-  }
+function probe(_msg) {
 }
 function MemoryView(_props) {
   const [core, setCore] = React.useState(null);

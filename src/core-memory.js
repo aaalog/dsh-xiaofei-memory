@@ -17,6 +17,7 @@
 //    <memory-recall> wrapper (a capture bug seen in the wild) must never be
 //    promoted to always-on, or the poison becomes permanent.
 
+import { createHash } from "node:crypto";
 import { tokenEstimate } from "./util.js";
 import { buildMemoryIndex, renderMemoryIndex, memoryIndexSignature } from "./memory-index.js";
 
@@ -90,7 +91,18 @@ export function renderCoreMemory(entries, { header = DEFAULT_HEADER } = {}) {
 /** Content signature: changes only when the selected slice really changes. */
 export function coreMemorySignature(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return "";
-  return entries.map((e) => `${e.id}:${e.content.length}`).join("|");
+  // Hash the bytes, not the length. The previous `id:content.length` key was
+  // only correct as long as a changed row always changed size — an edit that
+  // kept the length (a swap of one term for another of equal width) returned
+  // the same signature and the stale text kept being reused from the cache.
+  const digest = createHash("sha1");
+  for (const e of entries) {
+    digest.update(String(e.id));
+    digest.update("\u0000");
+    digest.update(String(e.content));
+    digest.update("\u0001");
+  }
+  return digest.digest("hex");
 }
 
 /**

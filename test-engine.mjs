@@ -4,6 +4,7 @@ import { retrieveForPrompt } from "./src/retrieval.js";
 import { CaptureTracker } from "./src/capture.js";
 import { FeedbackManager } from "./src/feedback.js";
 import { runNightlySleep } from "./src/sleep.js";
+import { coreMemorySignature } from "./src/core-memory.js";
 import { loadEvolution, runEvolution } from "./src/evolution.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -210,6 +211,36 @@ console.log("== 7b. store hygiene: secrets, length cap, transaction nesting ==")
   } catch { nestedOk = false; }
   db.exec("COMMIT");
   check("write inside an externally opened transaction works", nestedOk);
+}
+
+console.log("== 7c. dedupe and schema invariants ==");
+{
+  // The similarity pass only ever saw the most recent 20 rows, so writing the
+  // same text again after enough unrelated history produced a second row. The
+  // live store held six such pairs at similarity 1.00.
+  const role = "dedupe-role";
+  const probeText = "这条记忆会在候选窗口之外被原样重写一次";
+  const first = addMemory(db, { roleId: role, layer: "recent", content: probeText }).id;
+  for (let i = 0; i < 30; i++) {
+    // Dissimilar on purpose: near-identical filler would collapse through the
+    // merge path and never push the probe row out of the window.
+    addMemory(db, { roleId: role, layer: "recent", content: "填充 " + Math.random().toString(36).slice(2) + " " + i });
+  }
+  const again = addMemory(db, { roleId: role, layer: "recent", content: probeText });
+  check("exact repeat merges instead of duplicating", again.merged === true && again.id === first, JSON.stringify(again));
+
+  const trigger = db.prepare("SELECT sql FROM sqlite_master WHERE name='memories_fts_au'").get();
+  check("FTS update trigger is scoped OF content", /OF\s+content/i.test(trigger?.sql ?? ""),
+    String(trigger?.sql ?? "").slice(0, 80));
+}
+
+console.log("== 7d. core signature tracks content, not length ==");
+{
+  const a = coreMemorySignature([{ id: "m1", content: "甲乙丙丁" }]);
+  const b = coreMemorySignature([{ id: "m1", content: "甲乙戊己" }]);
+  check("same-length edit changes the signature", a !== b, a.slice(0, 8) + " vs " + b.slice(0, 8));
+  check("identical slice keeps the signature",
+    a === coreMemorySignature([{ id: "m1", content: "甲乙丙丁" }]));
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");

@@ -259,7 +259,14 @@ CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
   INSERT INTO memories_fts(memories_fts, rowid, content, role_id, layer)
   VALUES ('delete', old.rowid, old.content, old.role_id, old.layer);
 END;
-CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+-- Recreated unconditionally below: an existing store keeps whatever trigger it
+-- was created with under IF NOT EXISTS, so the definition only changes if the
+-- old one is dropped first.
+DROP TRIGGER IF EXISTS memories_fts_au;
+-- The OF clause matters: without it every UPDATE rewrote the FTS row, and the
+-- read path updates strength/last_accessed for each recalled memory, so a plain
+-- read amplified into FTS writes.
+CREATE TRIGGER memories_fts_au AFTER UPDATE OF content, role_id, layer ON memories BEGIN
   INSERT INTO memories_fts(memories_fts, rowid, content, role_id, layer)
   VALUES ('delete', old.rowid, old.content, old.role_id, old.layer);
   INSERT INTO memories_fts(rowid, content, role_id, layer)
@@ -443,9 +450,13 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
   if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "\u2026";
+  const exact = noMerge ? null : db.prepare(
+    "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' AND content = ? LIMIT 1"
+  ).get(roleId, text);
   const candidates = noMerge ? [] : db.prepare(
-    "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20"
+    "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 50"
   ).all(roleId);
+  if (exact) candidates.unshift(exact);
   for (const c of candidates) {
     const sim = similarity(text, c.content);
     if (sim >= 0.92) {
@@ -671,10 +682,6 @@ function buildFtsQuery(text) {
   if (terms.size === 0) return "";
   return Array.from(terms).slice(0, 12).map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 }
-
-// src/index.js
-import { appendFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 
 // src/retrieval.js
 var LAYER_PRIORITY = { core: 0, weekly: 1, recent: 2, diffusion: 3 };
@@ -1101,6 +1108,9 @@ function runEvolution(db, stats = {}) {
   return { ...current, changed };
 }
 
+// src/core-memory.js
+import { createHash } from "node:crypto";
+
 // src/memory-index.js
 var DEFAULT_INDEX_HEADER = "## \u8BB0\u5FC6\u7D22\u5F15\n\u4EE5\u4E0B\u8BB0\u5FC6\u672A\u5C55\u5F00\u3002\u9700\u8981\u5168\u6587\u65F6\u8C03\u7528 memory_core_read(id)\u3002";
 var BUDGET_SAFETY_TOKENS = 6;
@@ -1250,7 +1260,14 @@ ${lines.join("\n")}`;
 }
 function coreMemorySignature(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return "";
-  return entries.map((e) => `${e.id}:${e.content.length}`).join("|");
+  const digest = createHash("sha1");
+  for (const e of entries) {
+    digest.update(String(e.id));
+    digest.update("\0");
+    digest.update(String(e.content));
+    digest.update("");
+  }
+  return digest.digest("hex");
 }
 var CoreMemoryCache = class {
   constructor() {
@@ -1611,7 +1628,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261121014213" : "dev";
+var BUILD_STAMP = true ? "20261121022626" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -1703,11 +1720,16 @@ async function apply(ctx, config) {
       }
       for (const id of recall.injectedIds) touchAccessed(db, id);
       bumpRecallStats(db, { count: recall.injectedIds.length });
-      const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
-      const memoryMessage = createUserMessage({
+      let createUserMessage = null;
+      try {
+        ({ createUserMessage } = await import("@deepseek-ai/dsh-llm"));
+      } catch {
+      }
+      const recallPayload = {
         content: [{ type: "text", text: recall.text }],
         source: { kind: "dsh-xiaofei-memory", form: "memory-recall", ids: recall.injectedIds }
-      });
+      };
+      const memoryMessage = typeof createUserMessage === "function" ? createUserMessage(recallPayload) : { role: "user", ...recallPayload, id: `dshxf-recall-${Date.now().toString(36)}` };
       const lastUser = userMsgs[userMsgs.length - 1];
       const rewritten = [...decision.messages];
       rewritten.splice(rewritten.indexOf(lastUser), 0, memoryMessage);
@@ -1875,14 +1897,9 @@ async function apply(ctx, config) {
     previewRecall: (query, roleId) => previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens }),
     triggerNightlySleep: () => core.triggerNightlySleep(),
     listSoulMemories: () => listSoulMemories(db),
-    // Diagnostic probe: the Web client calls this to prove it is running and
-    // which mount path it took. Writes a line to a temp log.
-    probe(msg) {
-      try {
-        appendFileSync(join(tmpdir(), "dshxf-probe.log"), `${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
-`);
-      } catch {
-      }
+    // Kept so an older client bundle does not fail on a missing service; it no
+    // longer writes a temp log. The shipping client stopped calling it.
+    probe() {
       return true;
     }
   });

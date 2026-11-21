@@ -8,8 +8,6 @@ import { randomBytes } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 
 import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed } from "./db.js";
-import { appendFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { retrieveForPrompt } from "./retrieval.js";
 import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
@@ -205,11 +203,22 @@ export async function apply(ctx, config) {
       // Feed the evolution loop: how many memories were actually injected.
       bumpRecallStats(db, { count: recall.injectedIds.length });
 
-      const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
-      const memoryMessage = createUserMessage({
+      // The host's constructor is preferred, but the package is an optional
+      // peer. When it could not be imported the whole injection was abandoned,
+      // which presents as "the plugin does nothing" while the write track keeps
+      // filling the store. The message shape is just a user message carrying a
+      // source tag, so build it locally when the peer is missing.
+      let createUserMessage = null;
+      try {
+        ({ createUserMessage } = await import("@deepseek-ai/dsh-llm"));
+      } catch { /* optional peer unavailable; use the local shape */ }
+      const recallPayload = {
         content: [{ type: "text", text: recall.text }],
         source: { kind: "dsh-xiaofei-memory", form: "memory-recall", ids: recall.injectedIds },
-      });
+      };
+      const memoryMessage = typeof createUserMessage === "function"
+        ? createUserMessage(recallPayload)
+        : { role: "user", ...recallPayload, id: `dshxf-recall-${Date.now().toString(36)}` };
       const lastUser = userMsgs[userMsgs.length - 1];
       const rewritten = [...decision.messages];
       rewritten.splice(rewritten.indexOf(lastUser), 0, memoryMessage);
@@ -392,10 +401,9 @@ export async function apply(ctx, config) {
     previewRecall: (query, roleId) => previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens }),
     triggerNightlySleep: () => core.triggerNightlySleep(),
     listSoulMemories: () => listSoulMemories(db),
-    // Diagnostic probe: the Web client calls this to prove it is running and
-    // which mount path it took. Writes a line to a temp log.
-    probe(msg) {
-      try { appendFileSync(join(tmpdir(), "dshxf-probe.log"), `${new Date().toISOString()} ${msg}\n`); } catch { /* ignore */ }
+    // Kept so an older client bundle does not fail on a missing service; it no
+    // longer writes a temp log. The shipping client stopped calling it.
+    probe() {
       return true;
     },
   });

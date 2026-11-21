@@ -54,7 +54,14 @@ CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
   INSERT INTO memories_fts(memories_fts, rowid, content, role_id, layer)
   VALUES ('delete', old.rowid, old.content, old.role_id, old.layer);
 END;
-CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+-- Recreated unconditionally below: an existing store keeps whatever trigger it
+-- was created with under IF NOT EXISTS, so the definition only changes if the
+-- old one is dropped first.
+DROP TRIGGER IF EXISTS memories_fts_au;
+-- The OF clause matters: without it every UPDATE rewrote the FTS row, and the
+-- read path updates strength/last_accessed for each recalled memory, so a plain
+-- read amplified into FTS writes.
+CREATE TRIGGER memories_fts_au AFTER UPDATE OF content, role_id, layer ON memories BEGIN
   INSERT INTO memories_fts(memories_fts, rowid, content, role_id, layer)
   VALUES ('delete', old.rowid, old.content, old.role_id, old.layer);
   INSERT INTO memories_fts(rowid, content, role_id, layer)
@@ -232,9 +239,17 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   // is for callers that must end up with a new standalone row (nightly
   // distillation): merging a summary into one of the rows it is about to
   // archive made the summary and the whole group vanish together at purge time.
+  // Exact repeats first: an identical row written again used to coexist as soon
+  // as it fell outside the recent-20 window (the live store held six pairs at
+  // similarity 1.00 for exactly this reason). Equality needs no window.
+  const exact = noMerge ? null : db.prepare(
+    "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' AND content = ? LIMIT 1"
+  ).get(roleId, text);
+
   const candidates = noMerge ? [] : db.prepare(
-    "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20"
+    "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 50"
   ).all(roleId);
+  if (exact) candidates.unshift(exact);
   for (const c of candidates) {
     const sim = similarity(text, c.content);
     if (sim >= 0.92) {

@@ -84,7 +84,9 @@ async function callBridge(op: string, args: any = {}): Promise<any> {
 }
 
 export function apply(ctx: any): () => void {
-  (window as any).__ctx__ = ctx;
+  // No `window.__ctx__` export: publishing the whole host context on the page
+  // global handed every other same-origin plugin a wider capability surface
+  // than the bridge token ever did. Nothing outside this module read it.
   try { injectCss(); } catch { /* ignore */ }
   probe("apply");
 
@@ -207,15 +209,16 @@ function softService(ctx: any, name: string): any {
   try { return ctx[name]; } catch { return undefined; }
 }
 
-/** Fire-and-forget diagnostic to the host (writes dshxf-probe.log). */
-function probe(msg: string): void {
-  try {
-    const ctx = (window as any).__ctx__;
-    if (!ctx) return;
-    const remote = ctx.remote || (typeof ctx.get === "function" ? ctx.get("remote") : undefined);
-    const svc = remote && remote.memoryConsole;
-    if (svc && typeof svc.probe === "function") svc.probe(msg);
-  } catch { /* ignore */ }
+/**
+ * Diagnostic hook, now inert.
+ *
+ * It used to append a line to `%TEMP%\dshxf-probe.log` on every apply and on
+ * every mount attempt, which is debugging scaffolding that should not ship. The
+ * call sites are kept so the surrounding flow stays readable; the body is a
+ * no-op, and it no longer needs the host context.
+ */
+function probe(_msg: string): void {
+  /* intentionally empty */
 }
 
 /**
