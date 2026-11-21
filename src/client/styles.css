@@ -182,3 +182,134 @@
 }
 .dshxf-warn b { font-size: 13px; }
 .dshxf-warn .dshxf-note { margin: 4px 0 0; }
+
+/* ── Design scale ────────────────────────────────────────────────────────── */
+/* The console grew one rule at a time, so spacing and type were ad hoc: a
+   heading at 15px, body at 13px, meta at 11-12px depending on the component,
+   and buttons whose height depended on their padding. These tokens give one
+   scale — SPACE for rhythm, and a fixed set of text roles — so a new panel has
+   an obvious right answer instead of another one-off value. */
+.dshxf-console,
+.dshxf-view {
+  --dshxf-space-1: 4px;
+  --dshxf-space-2: 8px;
+  --dshxf-space-3: 12px;
+  --dshxf-space-4: 16px;
+  --dshxf-radius: 8px;
+  --dshxf-line: var(--dsh-border, #e1e4e8);
+  --dshxf-muted: var(--dsh-fg-muted, #6e7781);
+  --dshxf-control-h: 30px;
+}
+
+/* Text roles. Exactly four: title, subtitle, body, meta. */
+.dshxf-h {
+  margin: 0 0 var(--dshxf-space-2, 8px);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+.dshxf-sub {
+  margin: var(--dshxf-space-4, 16px) 0 var(--dshxf-space-2, 8px);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-note,
+.dshxf-msg {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-note { padding: var(--dshxf-space-2, 8px) var(--dshxf-space-3, 12px); }
+
+/* Uniform control height: buttons and inputs no longer differ by a pixel or
+   two depending on which padding they happened to inherit. */
+.dshxf-in,
+.dshxf-btn {
+  height: var(--dshxf-control-h, 30px);
+  box-sizing: border-box;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.dshxf-in { padding: 0 var(--dshxf-space-2, 8px); }
+.dshxf-btn { padding: 0 var(--dshxf-space-3, 12px); display: inline-flex; align-items: center; }
+.dshxf-btn.dshxf-lg { height: 34px; padding: 0 18px; }
+.dshxf-actions { gap: var(--dshxf-space-2, 8px); row-gap: var(--dshxf-space-2, 8px); }
+
+/* ── Row lists (replacing cards) ─────────────────────────────────────────── */
+/* A bordered, rounded box around every single item reads as a stack of
+   separate objects and costs vertical space that the content needs. A list of
+   rows with hairline separators scans faster and holds more per screen. */
+.dshxf-rows {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--dshxf-line, #e1e4e8);
+}
+.dshxf-rrow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px var(--dshxf-space-1, 4px);
+  border-bottom: 1px solid var(--dshxf-line, #e1e4e8);
+}
+.dshxf-rrow:hover { background: var(--dsh-bg-2, #f6f8fa); }
+.dshxf-rrow-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dshxf-rrow-body {
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dshxf-rrow-time {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-empty {
+  padding: var(--dshxf-space-4, 16px) var(--dshxf-space-1, 4px);
+  font-size: 12px;
+  color: var(--dshxf-muted, #6e7781);
+}
+
+/* ── Pager ───────────────────────────────────────────────────────────────── */
+.dshxf-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--dshxf-space-1, 4px);
+  flex-wrap: wrap;
+  padding-top: var(--dshxf-space-2, 8px);
+}
+.dshxf-pg {
+  appearance: none;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 var(--dshxf-space-2, 8px);
+  border: 1px solid var(--dshxf-line, #d0d7de);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dshxf-pg:hover:not(:disabled) { background: var(--dsh-bg-2, #f6f8fa); }
+.dshxf-pg:disabled { opacity: 0.45; cursor: not-allowed; }
+.dshxf-pg.dshxf-pg-on {
+  background: #0969da;
+  border-color: #0969da;
+  color: #fff;
+  font-weight: 600;
+}
+.dshxf-pager-info {
+  margin-left: var(--dshxf-space-2, 8px);
+  font-size: 11px;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-warn-tag { background: #fff1c2; color: #7a5b00; }

@@ -1531,6 +1531,48 @@ function allRoleIds(db) {
     return ["global"];
   }
 }
+var SLEEP_LOG_KEY = "sleepLog";
+var SLEEP_LOG_MAX = 30;
+function readSleepLog(db) {
+  try {
+    const parsed = JSON.parse(metaGet(db, SLEEP_LOG_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function recordSleepRun(db, stats) {
+  const entry = {
+    at: Date.now(),
+    threshold: stats?.threshold ?? null,
+    scanned: stats?.scanned ?? 0,
+    distilledGroups: stats?.distilledGroups ?? 0,
+    distilledMemories: stats?.distilledMemories ?? 0,
+    archived: stats?.archived ?? 0,
+    skippedEntities: stats?.skippedEntities ?? 0,
+    skippedGroups: stats?.skippedGroups ?? 0,
+    distillSkipped: stats?.distillSkipped ?? null,
+    vacuumed: stats?.vacuumed === true,
+    // Only the shape of what was distilled — entity, role, group size. The
+    // summary text itself lives in the store as a normal memory.
+    groups: Array.isArray(stats?.details) ? stats.details.map((d) => ({
+      entity: String(d?.entity ?? ""),
+      roleId: d?.roleId ?? null,
+      count: Number(d?.count) || 0
+    })) : []
+  };
+  const log = readSleepLog(db);
+  log.unshift(entry);
+  try {
+    metaSet(db, SLEEP_LOG_KEY, JSON.stringify(log.slice(0, SLEEP_LOG_MAX)));
+  } catch {
+  }
+  return entry;
+}
+function getSleepLog(db, { limit = SLEEP_LOG_MAX } = {}) {
+  const log = readSleepLog(db);
+  return log.slice(0, Math.max(1, Number(limit) || SLEEP_LOG_MAX));
+}
 function getMemoryStats(db) {
   const byLayer = { core: 0, weekly: 0, recent: 0 };
   const byRole = {};
@@ -1576,6 +1618,7 @@ function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
 }
 async function triggerNightlySleep(db, { summarize, logger } = {}) {
   const stats = await runNightlySleep(db, { summarize, logger });
+  recordSleepRun(db, stats);
   metaSet(db, "meta.lastManualSleep", Date.now());
   return stats;
 }
@@ -1732,7 +1775,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261121060945" : "dev";
+var BUILD_STAMP = true ? "20261121063116" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -1913,6 +1956,7 @@ async function apply(ctx, config) {
     try {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
       const stats = await runNightlySleep(db, { summarize, logger });
+      recordSleepRun(db, stats);
       const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
@@ -2064,6 +2108,8 @@ async function apply(ctx, config) {
     switch (op) {
       case "stats":
         return getMemoryStats(db);
+      case "sleeplog":
+        return getSleepLog(db, { limit: Number(args?.limit) || 30 });
       case "search":
         return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: loadEvolution(db).timeDecay });
       case "preview":

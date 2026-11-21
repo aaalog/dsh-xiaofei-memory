@@ -19,6 +19,65 @@ function allRoleIds(db) {
   }
 }
 
+/**
+ * Nightly-sleep history.
+ *
+ * The pass runs unattended at 03:00 and previously left nothing behind but a log
+ * line in a file nobody reads, so "what did it actually do last night" had no
+ * answer. Each run is recorded with enough detail to be useful without quoting
+ * the memories themselves: how many were scanned, the threshold in force, which
+ * entity groups were distilled (with role and size), how many rows were archived
+ * or skipped, and whether the summariser was even available.
+ */
+const SLEEP_LOG_KEY = "sleepLog";
+const SLEEP_LOG_MAX = 30;
+
+function readSleepLog(db) {
+  try {
+    const parsed = JSON.parse(metaGet(db, SLEEP_LOG_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Record one completed sleep pass. Returns the stored entry. */
+export function recordSleepRun(db, stats) {
+  const entry = {
+    at: Date.now(),
+    threshold: stats?.threshold ?? null,
+    scanned: stats?.scanned ?? 0,
+    distilledGroups: stats?.distilledGroups ?? 0,
+    distilledMemories: stats?.distilledMemories ?? 0,
+    archived: stats?.archived ?? 0,
+    skippedEntities: stats?.skippedEntities ?? 0,
+    skippedGroups: stats?.skippedGroups ?? 0,
+    distillSkipped: stats?.distillSkipped ?? null,
+    vacuumed: stats?.vacuumed === true,
+    // Only the shape of what was distilled — entity, role, group size. The
+    // summary text itself lives in the store as a normal memory.
+    groups: Array.isArray(stats?.details)
+      ? stats.details.map((d) => ({
+          entity: String(d?.entity ?? ""),
+          roleId: d?.roleId ?? null,
+          count: Number(d?.count) || 0,
+        }))
+      : [],
+  };
+  const log = readSleepLog(db);
+  log.unshift(entry);
+  try {
+    metaSet(db, SLEEP_LOG_KEY, JSON.stringify(log.slice(0, SLEEP_LOG_MAX)));
+  } catch { /* a failed log write must never fail the pass */ }
+  return entry;
+}
+
+/** Most recent nightly-sleep runs, newest first. */
+export function getSleepLog(db, { limit = SLEEP_LOG_MAX } = {}) {
+  const log = readSleepLog(db);
+  return log.slice(0, Math.max(1, Number(limit) || SLEEP_LOG_MAX));
+}
+
 /** Count active memories grouped by layer and by role_id. */
 export function getMemoryStats(db) {
   const byLayer = { core: 0, weekly: 0, recent: 0 };
@@ -71,6 +130,7 @@ export function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }
 /** Manually run the nightly sleep pass. */
 export async function triggerNightlySleep(db, { summarize, logger } = {}) {
   const stats = await runNightlySleep(db, { summarize, logger });
+  recordSleepRun(db, stats);
   metaSet(db, "meta.lastManualSleep", Date.now());
   return stats;
 }

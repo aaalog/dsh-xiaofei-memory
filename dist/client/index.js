@@ -227,11 +227,142 @@ var styles_default = `/* dsh-xiaofei-memory management console styles */
 }
 .dshxf-warn b { font-size: 13px; }
 .dshxf-warn .dshxf-note { margin: 4px 0 0; }
+
+/* \u2500\u2500 Design scale \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* The console grew one rule at a time, so spacing and type were ad hoc: a
+   heading at 15px, body at 13px, meta at 11-12px depending on the component,
+   and buttons whose height depended on their padding. These tokens give one
+   scale \u2014 SPACE for rhythm, and a fixed set of text roles \u2014 so a new panel has
+   an obvious right answer instead of another one-off value. */
+.dshxf-console,
+.dshxf-view {
+  --dshxf-space-1: 4px;
+  --dshxf-space-2: 8px;
+  --dshxf-space-3: 12px;
+  --dshxf-space-4: 16px;
+  --dshxf-radius: 8px;
+  --dshxf-line: var(--dsh-border, #e1e4e8);
+  --dshxf-muted: var(--dsh-fg-muted, #6e7781);
+  --dshxf-control-h: 30px;
+}
+
+/* Text roles. Exactly four: title, subtitle, body, meta. */
+.dshxf-h {
+  margin: 0 0 var(--dshxf-space-2, 8px);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+.dshxf-sub {
+  margin: var(--dshxf-space-4, 16px) 0 var(--dshxf-space-2, 8px);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-note,
+.dshxf-msg {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-note { padding: var(--dshxf-space-2, 8px) var(--dshxf-space-3, 12px); }
+
+/* Uniform control height: buttons and inputs no longer differ by a pixel or
+   two depending on which padding they happened to inherit. */
+.dshxf-in,
+.dshxf-btn {
+  height: var(--dshxf-control-h, 30px);
+  box-sizing: border-box;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.dshxf-in { padding: 0 var(--dshxf-space-2, 8px); }
+.dshxf-btn { padding: 0 var(--dshxf-space-3, 12px); display: inline-flex; align-items: center; }
+.dshxf-btn.dshxf-lg { height: 34px; padding: 0 18px; }
+.dshxf-actions { gap: var(--dshxf-space-2, 8px); row-gap: var(--dshxf-space-2, 8px); }
+
+/* \u2500\u2500 Row lists (replacing cards) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* A bordered, rounded box around every single item reads as a stack of
+   separate objects and costs vertical space that the content needs. A list of
+   rows with hairline separators scans faster and holds more per screen. */
+.dshxf-rows {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--dshxf-line, #e1e4e8);
+}
+.dshxf-rrow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px var(--dshxf-space-1, 4px);
+  border-bottom: 1px solid var(--dshxf-line, #e1e4e8);
+}
+.dshxf-rrow:hover { background: var(--dsh-bg-2, #f6f8fa); }
+.dshxf-rrow-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dshxf-rrow-body {
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dshxf-rrow-time {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-empty {
+  padding: var(--dshxf-space-4, 16px) var(--dshxf-space-1, 4px);
+  font-size: 12px;
+  color: var(--dshxf-muted, #6e7781);
+}
+
+/* \u2500\u2500 Pager \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+.dshxf-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--dshxf-space-1, 4px);
+  flex-wrap: wrap;
+  padding-top: var(--dshxf-space-2, 8px);
+}
+.dshxf-pg {
+  appearance: none;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 var(--dshxf-space-2, 8px);
+  border: 1px solid var(--dshxf-line, #d0d7de);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dshxf-pg:hover:not(:disabled) { background: var(--dsh-bg-2, #f6f8fa); }
+.dshxf-pg:disabled { opacity: 0.45; cursor: not-allowed; }
+.dshxf-pg.dshxf-pg-on {
+  background: #0969da;
+  border-color: #0969da;
+  color: #fff;
+  font-weight: 600;
+}
+.dshxf-pager-info {
+  margin-left: var(--dshxf-space-2, 8px);
+  font-size: 11px;
+  color: var(--dshxf-muted, #6e7781);
+}
+.dshxf-warn-tag { background: #fff1c2; color: #7a5b00; }
 `;
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
-var BUILD_STAMP = true ? "20261121060945" : "dev";
+var BUILD_STAMP = true ? "20261121063116" : "dev";
 function useBuildMismatch() {
   const [host, setHost] = React.useState(null);
   React.useEffect(() => {
@@ -267,6 +398,50 @@ async function callBridge(op, args = {}) {
     );
   }
   return data.result;
+}
+var PAGE_SIZE_MAX = 12;
+var PAGE_SIZE_MIN = 4;
+function useRowsPerPage(rowHeight, cap = PAGE_SIZE_MAX) {
+  const [size, setSize] = React.useState(PAGE_SIZE_MIN);
+  React.useEffect(() => {
+    const compute = () => {
+      const available = Math.max(240, (window.innerHeight || 800) - 430);
+      setSize(Math.min(cap, Math.max(PAGE_SIZE_MIN, Math.floor(available / rowHeight))));
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, [rowHeight, cap]);
+  return size;
+}
+function usePaged(items, size) {
+  const [page, setPage] = React.useState(1);
+  const pages = Math.max(1, Math.ceil(items.length / size));
+  const current = Math.min(page, pages);
+  React.useEffect(() => {
+    setPage(1);
+  }, [items.length, size]);
+  const start = (current - 1) * size;
+  return { page: current, setPage, pages, slice: items.slice(start, start + size), start };
+}
+function Pager({ page, pages, total, onPage }) {
+  if (pages <= 1) {
+    return /* @__PURE__ */ React.createElement("div", { className: "dshxf-pager" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-pager-info" }, total, " \u6761"));
+  }
+  const from = Math.max(1, Math.min(page - 2, pages - 4));
+  const to = Math.min(pages, from + 4);
+  const nums = [];
+  for (let n = from; n <= to; n++) nums.push(n);
+  return /* @__PURE__ */ React.createElement("div", { className: "dshxf-pager" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-pg", disabled: page <= 1, onClick: () => onPage(page - 1) }, "\u4E0A\u4E00\u9875"), nums.map((n) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: n,
+      className: "dshxf-pg" + (n === page ? " dshxf-pg-on" : ""),
+      "aria-current": n === page ? "page" : void 0,
+      onClick: () => onPage(n)
+    },
+    n
+  )), /* @__PURE__ */ React.createElement("button", { className: "dshxf-pg", disabled: page >= pages, onClick: () => onPage(page + 1) }, "\u4E0B\u4E00\u9875"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-pager-info" }, total, " \u6761 \xB7 ", pages, " \u9875"));
 }
 function apply(ctx) {
   try {
@@ -951,6 +1126,8 @@ function MemoriesTab({ scope, user }) {
   const [graph, setGraph] = React.useState({ nodes: [], links: [] });
   const [hoverId, setHoverId] = React.useState(null);
   const [pickId, setPickId] = React.useState(null);
+  const pageSize = useRowsPerPage(78);
+  const paged = usePaged(rows, pageSize);
   const refreshStats = () => {
     callBridge("stats").then((s) => setStats(s)).catch((e) => setMsg("\u7EDF\u8BA1\u5931\u8D25: " + (e?.message ?? e)));
   };
@@ -1008,13 +1185,23 @@ function MemoriesTab({ scope, user }) {
       onChange: (e) => setQuery(e.target.value),
       onKeyDown: (e) => e.key === "Enter" && doSearch()
     }
-  ), /* @__PURE__ */ React.createElement("select", { className: "dshxf-in", value: roleId, onChange: (e) => setRoleId(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u5168\u90E8\u89D2\u8272"), roles.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.name))), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-primary", onClick: doSearch }, "\u68C0\u7D22"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: refreshStats }, "\u5237\u65B0\u7EDF\u8BA1")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-msg" }, msg), /* @__PURE__ */ React.createElement("ul", { className: "dshxf-list" }, rows.map((r) => /* @__PURE__ */ React.createElement("li", { key: r.id, className: "dshxf-mem" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-meta" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.roleId), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.layer), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag dshxf-str" }, "\u5F3A\u5EA6 ", typeof r.strength === "number" ? r.strength.toFixed(2) : String(r.strength ?? "\u2014")), typeof r.score === "number" && /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u5206 ", r.score.toFixed(2))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-body" }, r.content)))));
+  ), /* @__PURE__ */ React.createElement("select", { className: "dshxf-in", value: roleId, onChange: (e) => setRoleId(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u5168\u90E8\u89D2\u8272"), roles.map((r) => /* @__PURE__ */ React.createElement("option", { key: r.id, value: r.id }, r.name))), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-primary", onClick: doSearch }, "\u68C0\u7D22"), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: refreshStats }, "\u5237\u65B0\u7EDF\u8BA1")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-msg" }, msg), /* @__PURE__ */ React.createElement("div", { className: "dshxf-rows" }, paged.slice.map((r) => /* @__PURE__ */ React.createElement("div", { key: r.id, className: "dshxf-rrow" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-rrow-top" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.roleId), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, r.layer), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag dshxf-str" }, "\u5F3A\u5EA6 ", typeof r.strength === "number" ? r.strength.toFixed(2) : String(r.strength ?? "\u2014")), typeof r.score === "number" && /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u5206 ", r.score.toFixed(2))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-rrow-body" }, r.content))), rows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "dshxf-empty" }, "\u6CA1\u6709\u7ED3\u679C")), /* @__PURE__ */ React.createElement(Pager, { page: paged.page, pages: paged.pages, total: rows.length, onPage: paged.setPage }));
 }
 function SleepTab({ scope, user }) {
   const hour = Number(user?.sleepTimeHour ?? 3);
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [hourDraft, setHourDraft] = React.useState(hour);
+  const [log, setLog] = React.useState([]);
+  const pageSize = useRowsPerPage(86);
+  const paged = usePaged(log, pageSize);
+  const loadLog = () => {
+    callBridge("sleeplog", { limit: 30 }).then((rows) => setLog(Array.isArray(rows) ? rows : [])).catch(() => {
+    });
+  };
+  React.useEffect(() => {
+    loadLog();
+  }, []);
   const saveHour = async () => {
     try {
       if (!scope || typeof scope.set !== "function") throw new Error("\u8BBE\u7F6E\u547D\u540D\u7A7A\u95F4\u4E0D\u53EF\u7528");
@@ -1029,7 +1216,11 @@ function SleepTab({ scope, user }) {
     setMsg("\u6B63\u5728\u6267\u884C\u591C\u95F4\u4EE3\u8C22\u2026");
     try {
       const r = await callBridge("sleep");
-      setMsg(`\u5B8C\u6210\uFF1A${typeof r === "object" && r ? r.summarized ?? r.archived ?? 0 : r} \u6761\u5904\u7406`);
+      const groups = Number(r?.distilledGroups) || 0;
+      const archived = Number(r?.archived) || 0;
+      const skipped = r?.distillSkipped ? "\uFF08\u65E0\u603B\u7ED3\u5668\uFF0C\u5DF2\u8DF3\u8FC7\u84B8\u998F\uFF09" : "";
+      setMsg(`\u5B8C\u6210\uFF1A\u84B8\u998F ${groups} \u7EC4 \xB7 \u5F52\u6863 ${archived} \u6761${r?.vacuumed ? " \xB7 \u5DF2 VACUUM" : ""}${skipped}`);
+      loadLog();
     } catch (e) {
       setMsg("\u6267\u884C\u5931\u8D25: " + (e?.message ?? e));
     }
@@ -1045,12 +1236,19 @@ function SleepTab({ scope, user }) {
       value: hourDraft,
       onChange: (e) => setHourDraft(Number(e.target.value))
     }
-  )), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: saveHour }, "\u4FDD\u5B58\u65F6\u95F4")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-danger dshxf-lg", disabled: busy, onClick: run }, busy ? "\u4EE3\u8C22\u4E2D\u2026" : "\u7ACB\u5373\u6267\u884C\u591C\u95F4\u4EE3\u8C22"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)), /* @__PURE__ */ React.createElement("p", { className: "dshxf-note" }, "\u591C\u95F4\u4EE3\u8C22\u4F1A\u6309\u5B9E\u4F53\u805A\u7C7B\uFF0C\u628A\u5BC6\u96C6\u7684\u540C\u4E3B\u9898\u8BB0\u5FC6\u538B\u7F29\u6210 100 \u5B57\u6838\u5FC3\uFF0C\u5E76\u5F52\u6863\u539F\u59CB\u6761\u76EE\u3001\u6E05\u7406\u5197\u4F59\u3002"));
+  )), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: saveHour }, "\u4FDD\u5B58\u65F6\u95F4")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn dshxf-danger dshxf-lg", disabled: busy, onClick: run }, busy ? "\u4EE3\u8C22\u4E2D\u2026" : "\u7ACB\u5373\u6267\u884C\u591C\u95F4\u4EE3\u8C22"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)), /* @__PURE__ */ React.createElement("p", { className: "dshxf-note" }, "\u591C\u95F4\u4EE3\u8C22\u4F1A\u6309\u5B9E\u4F53\u805A\u7C7B\uFF0C\u628A\u5BC6\u96C6\u7684\u540C\u4E3B\u9898\u8BB0\u5FC6\u538B\u7F29\u6210 100 \u5B57\u6838\u5FC3\uFF0C\u5E76\u5F52\u6863\u539F\u59CB\u6761\u76EE\u3001\u6E05\u7406\u5197\u4F59\u3002"), /* @__PURE__ */ React.createElement("h4", { className: "dshxf-sub" }, "\u6267\u884C\u8BB0\u5F55"), /* @__PURE__ */ React.createElement("div", { className: "dshxf-rows" }, paged.slice.map((e) => {
+    const when = new Date(Number(e.at) || 0);
+    const stamp = Number.isFinite(when.getTime()) ? when.toLocaleString() : "\u2014";
+    const groups = Array.isArray(e.groups) ? e.groups : [];
+    return /* @__PURE__ */ React.createElement("div", { key: String(e.at) + stamp, className: "dshxf-rrow" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-rrow-top" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-rrow-time" }, stamp), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u626B\u63CF ", e.scanned ?? 0), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u9608\u503C ", e.threshold ?? "\u2014"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u84B8\u998F ", e.distilledGroups ?? 0, " \u7EC4"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "\u5F52\u6863 ", e.archived ?? 0), e.distillSkipped ? /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag dshxf-warn-tag" }, "\u65E0\u603B\u7ED3\u5668") : null, e.vacuumed ? /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, "VACUUM") : null), /* @__PURE__ */ React.createElement("div", { className: "dshxf-rrow-body" }, groups.length > 0 ? "\u84B8\u998F\uFF1A" + groups.map((g) => `${g.entity}${g.roleId ? "@" + g.roleId : ""}(${g.count})`).join("\u3001") : "\u672C\u6B21\u672A\u84B8\u998F\u4EFB\u4F55\u5206\u7EC4"));
+  }), log.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "dshxf-empty" }, "\u5C1A\u65E0\u6267\u884C\u8BB0\u5F55")), /* @__PURE__ */ React.createElement(Pager, { page: paged.page, pages: paged.pages, total: log.length, onPage: paged.setPage }));
 }
 function SystemTab({ scope, user }) {
   const [model, setModel] = React.useState(String(user?.extractionModel ?? "deepseek-chat"));
   const [souls, setSouls] = React.useState([]);
   const [msg, setMsg] = React.useState("");
+  const pageSize = useRowsPerPage(66);
+  const paged = usePaged(souls, pageSize);
   const saveModel = async () => {
     try {
       if (!scope || typeof scope.set !== "function") throw new Error("\u8BBE\u7F6E\u547D\u540D\u7A7A\u95F4\u4E0D\u53EF\u7528");
@@ -1066,7 +1264,7 @@ function SystemTab({ scope, user }) {
   React.useEffect(() => {
     loadSouls();
   }, []);
-  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "dshxf-h" }, "\u5E95\u5C42\u7CFB\u7EDF"), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("label", null, "\u62BD\u53D6\u6A21\u578B", /* @__PURE__ */ React.createElement("input", { className: "dshxf-in", value: model, onChange: (e) => setModel(e.target.value) })), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: saveModel }, "\u4FDD\u5B58")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: loadSouls }, "\u52A0\u8F7D\u7075\u9B42\u521D\u59CB\u8BB0\u5FC6"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)), /* @__PURE__ */ React.createElement("ul", { className: "dshxf-list" }, souls.map((s) => /* @__PURE__ */ React.createElement("li", { key: s.id, className: "dshxf-mem" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-meta" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, s.id), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, s.layer)), /* @__PURE__ */ React.createElement("div", { className: "dshxf-mem-body" }, s.content)))));
+  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h3", { className: "dshxf-h" }, "\u5E95\u5C42\u7CFB\u7EDF"), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("label", null, "\u62BD\u53D6\u6A21\u578B", /* @__PURE__ */ React.createElement("input", { className: "dshxf-in", value: model, onChange: (e) => setModel(e.target.value) })), /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: saveModel }, "\u4FDD\u5B58")), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement("button", { className: "dshxf-btn", onClick: loadSouls }, "\u52A0\u8F7D\u7075\u9B42\u521D\u59CB\u8BB0\u5FC6"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-msg" }, msg)), /* @__PURE__ */ React.createElement("div", { className: "dshxf-rows" }, paged.slice.map((s) => /* @__PURE__ */ React.createElement("div", { key: s.id, className: "dshxf-rrow" }, /* @__PURE__ */ React.createElement("div", { className: "dshxf-rrow-top" }, /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, s.id), /* @__PURE__ */ React.createElement("span", { className: "dshxf-tag" }, s.layer)), /* @__PURE__ */ React.createElement("div", { className: "dshxf-rrow-body" }, s.content))), souls.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "dshxf-empty" }, "\u5C1A\u672A\u52A0\u8F7D")), /* @__PURE__ */ React.createElement(Pager, { page: paged.page, pages: paged.pages, total: souls.length, onPage: paged.setPage }));
 }
 
     })(require, module, exports);

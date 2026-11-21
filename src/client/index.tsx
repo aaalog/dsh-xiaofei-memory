@@ -83,6 +83,70 @@ async function callBridge(op: string, args: any = {}): Promise<any> {
   return data.result;
 }
 
+// ── Shared list primitives ─────────────────────────────────────────────────
+/**
+ * How many rows fit on screen, capped at 12.
+ *
+ * A fixed page size either wastes a tall window or forces scrolling in a short
+ * one, so the count follows the available height. The cap is 12 because more
+ * than that stops being scannable regardless of screen size.
+ */
+const PAGE_SIZE_MAX = 12;
+const PAGE_SIZE_MIN = 4;
+
+function useRowsPerPage(rowHeight: number, cap = PAGE_SIZE_MAX): number {
+  const [size, setSize] = React.useState(PAGE_SIZE_MIN);
+  React.useEffect(() => {
+    const compute = () => {
+      // Reserve room for the tab chrome above the list and the pager below it.
+      const available = Math.max(240, (window.innerHeight || 800) - 430);
+      setSize(Math.min(cap, Math.max(PAGE_SIZE_MIN, Math.floor(available / rowHeight))));
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, [rowHeight, cap]);
+  return size;
+}
+
+/** Page slice + the page state the pager needs. */
+function usePaged<T>(items: T[], size: number) {
+  const [page, setPage] = React.useState(1);
+  const pages = Math.max(1, Math.ceil(items.length / size));
+  const current = Math.min(page, pages);
+  // A new result set starts at page 1; staying on page 7 of a 2-page list was
+  // showing an empty table.
+  React.useEffect(() => { setPage(1); }, [items.length, size]);
+  const start = (current - 1) * size;
+  return { page: current, setPage, pages, slice: items.slice(start, start + size), start };
+}
+
+/** Numbered pager: previous / page numbers / next, plus a total. */
+function Pager({ page, pages, total, onPage }: { page: number; pages: number; total: number; onPage: (p: number) => void }) {
+  if (pages <= 1) {
+    return <div className="dshxf-pager"><span className="dshxf-pager-info">{total} 条</span></div>;
+  }
+  const from = Math.max(1, Math.min(page - 2, pages - 4));
+  const to = Math.min(pages, from + 4);
+  const nums: number[] = [];
+  for (let n = from; n <= to; n++) nums.push(n);
+  return (
+    <div className="dshxf-pager">
+      <button className="dshxf-pg" disabled={page <= 1} onClick={() => onPage(page - 1)}>上一页</button>
+      {nums.map((n) => (
+        <button
+          key={n}
+          className={"dshxf-pg" + (n === page ? " dshxf-pg-on" : "")}
+          aria-current={n === page ? "page" : undefined}
+          onClick={() => onPage(n)}
+        >{n}</button>
+      ))}
+      <button className="dshxf-pg" disabled={page >= pages} onClick={() => onPage(page + 1)}>下一页</button>
+      <span className="dshxf-pager-info">{total} 条 · {pages} 页</span>
+    </div>
+  );
+}
+
 export function apply(ctx: any): () => void {
   // No `window.__ctx__` export: publishing the whole host context on the page
   // global handed every other same-origin plugin a wider capability surface
@@ -769,6 +833,8 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
   const [graph, setGraph] = React.useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   const [pickId, setPickId] = React.useState<string | null>(null);
+  const pageSize = useRowsPerPage(78);
+  const paged = usePaged(rows, pageSize);
 
   const refreshStats = () => {
     callBridge("stats")
@@ -848,19 +914,21 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
         <button className="dshxf-btn" onClick={refreshStats}>刷新统计</button>
       </div>
       <div className="dshxf-msg">{msg}</div>
-      <ul className="dshxf-list">
-        {rows.map((r) => (
-          <li key={r.id} className="dshxf-mem">
-            <div className="dshxf-mem-meta">
+      <div className="dshxf-rows">
+        {paged.slice.map((r) => (
+          <div key={r.id} className="dshxf-rrow">
+            <div className="dshxf-rrow-top">
               <span className="dshxf-tag">{r.roleId}</span>
               <span className="dshxf-tag">{r.layer}</span>
               <span className="dshxf-tag dshxf-str">强度 {typeof r.strength === "number" ? r.strength.toFixed(2) : String(r.strength ?? "—")}</span>
               {typeof r.score === "number" && <span className="dshxf-tag">分 {r.score.toFixed(2)}</span>}
             </div>
-            <div className="dshxf-mem-body">{r.content}</div>
-          </li>
+            <div className="dshxf-rrow-body">{r.content}</div>
+          </div>
         ))}
-      </ul>
+        {rows.length === 0 && <div className="dshxf-empty">没有结果</div>}
+      </div>
+      <Pager page={paged.page} pages={paged.pages} total={rows.length} onPage={paged.setPage} />
     </div>
   );
 }
@@ -871,6 +939,16 @@ function SleepTab({ scope, user }: { scope: any; user: any }) {
   const [msg, setMsg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [hourDraft, setHourDraft] = React.useState(hour);
+  const [log, setLog] = React.useState<any[]>([]);
+  const pageSize = useRowsPerPage(86);
+  const paged = usePaged(log, pageSize);
+  const loadLog = () => {
+    // History is a convenience: a failure here must not block the tab.
+    callBridge("sleeplog", { limit: 30 })
+      .then((rows) => setLog(Array.isArray(rows) ? rows : []))
+      .catch(() => { /* ignore */ });
+  };
+  React.useEffect(() => { loadLog(); }, []);
   const saveHour = async () => {
     try {
       if (!scope || typeof scope.set !== "function") throw new Error("设置命名空间不可用");
@@ -882,8 +960,14 @@ function SleepTab({ scope, user }: { scope: any; user: any }) {
     setBusy(true);
     setMsg("正在执行夜间代谢…");
     try {
-      const r = await callBridge("sleep");
-      setMsg(`完成：${typeof r === "object" && r ? (r.summarized ?? r.archived ?? 0) : r} 条处理`);
+      const r: any = await callBridge("sleep");
+      // Report what the pass actually returns. This used to read `r.summarized`,
+      // a field the host never sends, so it always showed the archived count.
+      const groups = Number(r?.distilledGroups) || 0;
+      const archived = Number(r?.archived) || 0;
+      const skipped = r?.distillSkipped ? "（无总结器，已跳过蒸馏）" : "";
+      setMsg(`完成：蒸馏 ${groups} 组 · 归档 ${archived} 条${r?.vacuumed ? " · 已 VACUUM" : ""}${skipped}`);
+      loadLog();
     } catch (e: any) { setMsg("执行失败: " + (e?.message ?? e)); }
     setBusy(false);
   };
@@ -904,6 +988,35 @@ function SleepTab({ scope, user }: { scope: any; user: any }) {
         <span className="dshxf-msg">{msg}</span>
       </div>
       <p className="dshxf-note">夜间代谢会按实体聚类，把密集的同主题记忆压缩成 100 字核心，并归档原始条目、清理冗余。</p>
+
+      <h4 className="dshxf-sub">执行记录</h4>
+      <div className="dshxf-rows">
+        {paged.slice.map((e) => {
+          const when = new Date(Number(e.at) || 0);
+          const stamp = Number.isFinite(when.getTime()) ? when.toLocaleString() : "—";
+          const groups = Array.isArray(e.groups) ? e.groups : [];
+          return (
+            <div key={String(e.at) + stamp} className="dshxf-rrow">
+              <div className="dshxf-rrow-top">
+                <span className="dshxf-rrow-time">{stamp}</span>
+                <span className="dshxf-tag">扫描 {e.scanned ?? 0}</span>
+                <span className="dshxf-tag">阈值 {e.threshold ?? "—"}</span>
+                <span className="dshxf-tag">蒸馏 {e.distilledGroups ?? 0} 组</span>
+                <span className="dshxf-tag">归档 {e.archived ?? 0}</span>
+                {e.distillSkipped ? <span className="dshxf-tag dshxf-warn-tag">无总结器</span> : null}
+                {e.vacuumed ? <span className="dshxf-tag">VACUUM</span> : null}
+              </div>
+              <div className="dshxf-rrow-body">
+                {groups.length > 0
+                  ? "蒸馏：" + groups.map((g: any) => `${g.entity}${g.roleId ? "@" + g.roleId : ""}(${g.count})`).join("、")
+                  : "本次未蒸馏任何分组"}
+              </div>
+            </div>
+          );
+        })}
+        {log.length === 0 && <div className="dshxf-empty">尚无执行记录</div>}
+      </div>
+      <Pager page={paged.page} pages={paged.pages} total={log.length} onPage={paged.setPage} />
     </div>
   );
 }
@@ -913,6 +1026,8 @@ function SystemTab({ scope, user }: { scope: any; user: any }) {
   const [model, setModel] = React.useState(String(user?.extractionModel ?? "deepseek-chat"));
   const [souls, setSouls] = React.useState<any[]>([]);
   const [msg, setMsg] = React.useState("");
+  const pageSize = useRowsPerPage(66);
+  const paged = usePaged(souls, pageSize);
   const saveModel = async () => {
     try {
       if (!scope || typeof scope.set !== "function") throw new Error("设置命名空间不可用");
@@ -939,14 +1054,19 @@ function SystemTab({ scope, user }: { scope: any; user: any }) {
         <button className="dshxf-btn" onClick={loadSouls}>加载灵魂初始记忆</button>
         <span className="dshxf-msg">{msg}</span>
       </div>
-      <ul className="dshxf-list">
-        {souls.map((s) => (
-          <li key={s.id} className="dshxf-mem">
-            <div className="dshxf-mem-meta"><span className="dshxf-tag">{s.id}</span><span className="dshxf-tag">{s.layer}</span></div>
-            <div className="dshxf-mem-body">{s.content}</div>
-          </li>
+      <div className="dshxf-rows">
+        {paged.slice.map((s) => (
+          <div key={s.id} className="dshxf-rrow">
+            <div className="dshxf-rrow-top">
+              <span className="dshxf-tag">{s.id}</span>
+              <span className="dshxf-tag">{s.layer}</span>
+            </div>
+            <div className="dshxf-rrow-body">{s.content}</div>
+          </div>
         ))}
-      </ul>
+        {souls.length === 0 && <div className="dshxf-empty">尚未加载</div>}
+      </div>
+      <Pager page={paged.page} pages={paged.pages} total={souls.length} onPage={paged.setPage} />
     </div>
   );
 }

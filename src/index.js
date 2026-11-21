@@ -13,7 +13,7 @@ import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
 import { loadEvolution, runEvolution } from "./evolution.js";
-import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories, previewCoreMemory, getMemoryGraph } from "./console.js";
+import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories, previewCoreMemory, getMemoryGraph, recordSleepRun, getSleepLog } from "./console.js";
 import { registerCoreMemory } from "./core-memory.js";
 import { resolveMemoryRef, shortMemoryId } from "./memory-index.js";
 
@@ -315,6 +315,8 @@ export async function apply(ctx, config) {
         ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel)
         : null;
       const stats = await runNightlySleep(db, { summarize, logger });
+      // The scheduled pass runs unattended; without this it leaves no trace.
+      recordSleepRun(db, stats);
       const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
@@ -463,6 +465,7 @@ export async function apply(ctx, config) {
   const runBridgeOp = async (op, args) => {
     switch (op) {
       case "stats": return getMemoryStats(db);
+      case "sleeplog": return getSleepLog(db, { limit: Number(args?.limit) || 30 });
       case "search":
         return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: loadEvolution(db).timeDecay });
       case "preview":
