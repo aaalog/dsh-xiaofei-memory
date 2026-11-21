@@ -25,6 +25,41 @@ export function timeDecay(createdAt, factor = 0.01) {
 }
 
 /**
+ * Hard ceiling on what one memory row may hold. Capture is indiscriminate, and
+ * a long row costs three times over: it is truncated to 300 chars when the
+ * always-on block renders it, it inflates every FTS row, and the LIKE fallback
+ * scans it whole. 400 characters is more than any distilled fact needs.
+ */
+export const MAX_MEMORY_CHARS = 400;
+
+/**
+ * Credential-shaped text must not reach the store. The memory database is a
+ * plain SQLite file and the injection paths paste rows straight into prompts;
+ * a pasted deploy note once carried a literal delivery password into the
+ * always-on core block, where it was replayed to the model every turn.
+ *
+ * Deliberately narrow: the separator is mandatory, so a genuine discussion of
+ * 密码学 or "the password field" survives while an assigned value does not.
+ */
+const SECRET_PATTERNS = [
+  /((?:密码|口令|password|passwd|pwd)\s*(?:[:：=]|是|为)\s*)[^\s，。；,;]{4,}/gi,
+  /((?:api[_-]?key|apikey|token|secret|access[_-]?key)\s*[:：=]\s*)[A-Za-z0-9_\-.]{8,}/gi,
+  /\bsk-[A-Za-z0-9]{10,}\b/g,
+];
+
+/**
+ * Replace credential values with `***`, keeping the surrounding sentence so
+ * the fact itself ("投递密码是***") stays readable and searchable.
+ */
+export function scrubSecrets(text) {
+  let out = String(text ?? "");
+  for (const re of SECRET_PATTERNS) {
+    out = out.replace(re, (match, prefix) => (typeof prefix === "string" ? prefix + "***" : "***"));
+  }
+  return out;
+}
+
+/**
  * Rough token estimate for a text. CJK characters count ~1 token each,
  * Latin words ~1 token per whitespace token. Used for the 1200-token
  * injection budget and capture sizing.

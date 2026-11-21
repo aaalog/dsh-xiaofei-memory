@@ -22,6 +22,19 @@ function daysSince(ts) {
 function timeDecay(createdAt, factor = 0.01) {
   return Math.exp(-factor * daysSince(createdAt));
 }
+var MAX_MEMORY_CHARS = 400;
+var SECRET_PATTERNS = [
+  /((?:密码|口令|password|passwd|pwd)\s*(?:[:：=]|是|为)\s*)[^\s，。；,;]{4,}/gi,
+  /((?:api[_-]?key|apikey|token|secret|access[_-]?key)\s*[:：=]\s*)[A-Za-z0-9_\-.]{8,}/gi,
+  /\bsk-[A-Za-z0-9]{10,}\b/g
+];
+function scrubSecrets(text) {
+  let out = String(text ?? "");
+  for (const re of SECRET_PATTERNS) {
+    out = out.replace(re, (match, prefix) => typeof prefix === "string" ? prefix + "***" : "***");
+  }
+  return out;
+}
 function tokenEstimate(text) {
   if (typeof text !== "string" || text.length === 0) return 0;
   const cjk = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g) ?? []).length;
@@ -337,9 +350,52 @@ function openMemoryDb(dbPath) {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
   seedIfEmpty(db);
   return db;
+}
+var TX_DEPTH = /* @__PURE__ */ new WeakMap();
+var SAVEPOINT_SEQ = 0;
+function withTransaction(db, fn) {
+  const alreadyIn = db.isTransaction === true || (TX_DEPTH.get(db) ?? 0) > 0;
+  if (alreadyIn) {
+    const name2 = `dshxf_sp_${++SAVEPOINT_SEQ}`;
+    db.exec(`SAVEPOINT ${name2}`);
+    TX_DEPTH.set(db, (TX_DEPTH.get(db) ?? 0) + 1);
+    try {
+      const result = fn();
+      db.exec(`RELEASE ${name2}`);
+      return result;
+    } catch (err) {
+      try {
+        db.exec(`ROLLBACK TO ${name2}`);
+      } catch {
+      }
+      try {
+        db.exec(`RELEASE ${name2}`);
+      } catch {
+      }
+      throw err;
+    } finally {
+      TX_DEPTH.set(db, Math.max(0, (TX_DEPTH.get(db) ?? 1) - 1));
+    }
+  }
+  db.exec("BEGIN IMMEDIATE");
+  TX_DEPTH.set(db, 1);
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+    }
+    throw err;
+  } finally {
+    TX_DEPTH.set(db, 0);
+  }
 }
 function seedIfEmpty(db) {
   const row = db.prepare("SELECT COUNT(*) AS n FROM memories").get();
@@ -380,9 +436,13 @@ function countMemories(db) {
   const row = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE status = 'active'").get();
   return row ? row.n : 0;
 }
-function addMemory(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1, noMerge = false }) {
-  const text = normalizeContent(content);
+function addMemory(db, opts) {
+  return withTransaction(db, () => addMemoryImpl(db, opts));
+}
+function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1, noMerge = false }) {
+  let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
+  if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "\u2026";
   const candidates = noMerge ? [] : db.prepare(
     "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20"
   ).all(roleId);
@@ -571,10 +631,12 @@ function vacuumAndOptimize(db) {
 }
 var SEED_ID_PATTERN = "mem_0[0-9][0-9]";
 function purgeArchived(db) {
-  db.prepare(
-    `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
-  ).run();
-  db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+  withTransaction(db, () => {
+    db.prepare(
+      `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
+    ).run();
+    db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+  });
 }
 function isSeedMemoryId(id) {
   return typeof id === "string" && /^mem_0\d\d$/.test(id);
@@ -931,17 +993,23 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
     return stats;
   }
   for (const m of all) {
+    const roleId = m.role_id ?? "global";
     for (const e of m.entities ?? []) {
       if (!isMeaningfulEntity(e)) continue;
-      if (!groups.has(e)) groups.set(e, []);
-      const arr = groups.get(e);
-      if (arr.length <= 40) arr.push(m);
+      const key = roleId + "\0" + e;
+      if (!groups.has(key)) groups.set(key, { roleId, entity: e, memories: [] });
+      const g = groups.get(key);
+      if (g.memories.length <= 40) g.memories.push(m);
     }
   }
   const archivedIds = /* @__PURE__ */ new Set();
-  for (const [entity, memories] of groups) {
+  for (const { roleId, entity, memories } of groups.values()) {
     const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values()).filter((m) => !archivedIds.has(m.id));
     if (unique.length <= threshold) {
+      stats.skippedEntities++;
+      continue;
+    }
+    if (unique.some((m) => (m.role_id ?? "global") !== roleId)) {
       stats.skippedEntities++;
       continue;
     }
@@ -960,26 +1028,30 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
       logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
       continue;
     }
-    const res = addMemory(db, {
-      roleId: unique[0].role_id ?? "global",
-      layer: "core",
-      content,
-      entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
-      originIds: ids,
-      strength: 1,
-      // The summary must be its own row: merging it into a row from `ids` used
-      // to hand back that id, which the archive loop then archived and purged.
-      noMerge: true
+    const res = withTransaction(db, () => {
+      const written = addMemory(db, {
+        roleId,
+        layer: "core",
+        content,
+        entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
+        originIds: ids,
+        strength: 1,
+        // The summary must be its own row: merging it into a row from `ids` used
+        // to hand back that id, which the archive loop then archived and purged.
+        noMerge: true
+      });
+      for (const id of ids) {
+        if (isSeedMemoryId(id) || id === written?.id) continue;
+        archiveMemory(db, id);
+        archivedIds.add(id);
+        stats.archived++;
+      }
+      return written;
     });
-    for (const id of ids) {
-      if (isSeedMemoryId(id) || id === res?.id) continue;
-      archiveMemory(db, id);
-      archivedIds.add(id);
-      stats.archived++;
-    }
     stats.distilledGroups++;
     stats.distilledMemories += ids.length;
     stats.details.push({
+      roleId,
       entity,
       count: ids.length,
       summary: content.slice(0, SUMMARY_MAX_CHARS),
@@ -1539,7 +1611,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261121012014" : "dev";
+var BUILD_STAMP = true ? "20261121014213" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

@@ -15,6 +15,8 @@ import {
   toJsonList,
   normalizeContent,
   clamp,
+  scrubSecrets,
+  MAX_MEMORY_CHARS,
 } from "./util.js";
 
 const SCHEMA = `
@@ -101,9 +103,69 @@ export function openMemoryDb(dbPath) {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  // A second writer — another DSH window, or a maintenance script — used to
+  // fail instantly with "database is locked", and the failure was caught and
+  // logged as a warning, so memories silently never landed. Wait instead.
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
   seedIfEmpty(db);
   return db;
+}
+
+/**
+ * Run `fn` as one atomic write unit.
+ *
+ * `node:sqlite` is synchronous, so a single statement is atomic, but every
+ * compound write in this file is several statements: merge = UPDATE + entity
+ * delete/insert, conflict = archive + INSERT + entity replace, distillation =
+ * summary INSERT + N archives, and purge = two statements. A throw between two
+ * of them used to leave the FTS index and `entity_index` out of step with
+ * `memories`, or a summary written while its originals survived.
+ *
+ * Reentrant: an inner call joins the outer transaction instead of issuing a
+ * nested BEGIN, which SQLite would reject.
+ */
+const TX_DEPTH = new WeakMap();
+let SAVEPOINT_SEQ = 0;
+
+export function withTransaction(db, fn) {
+  // `isTransaction` reports an open transaction regardless of who opened it —
+  // including a caller that wrapped our write in its own BEGIN. Treating that
+  // as a failure would break those callers, so join it with a savepoint, which
+  // still lets this unit roll back alone.
+  const alreadyIn = db.isTransaction === true || (TX_DEPTH.get(db) ?? 0) > 0;
+
+  if (alreadyIn) {
+    const name = `dshxf_sp_${++SAVEPOINT_SEQ}`;
+    db.exec(`SAVEPOINT ${name}`);
+    TX_DEPTH.set(db, (TX_DEPTH.get(db) ?? 0) + 1);
+    try {
+      const result = fn();
+      db.exec(`RELEASE ${name}`);
+      return result;
+    } catch (err) {
+      try { db.exec(`ROLLBACK TO ${name}`); } catch { /* savepoint already gone */ }
+      try { db.exec(`RELEASE ${name}`); } catch { /* savepoint already gone */ }
+      throw err;
+    } finally {
+      TX_DEPTH.set(db, Math.max(0, (TX_DEPTH.get(db) ?? 1) - 1));
+    }
+  }
+
+  // IMMEDIATE takes the write lock up front, so two writers serialise here
+  // rather than one failing halfway through its statements.
+  db.exec("BEGIN IMMEDIATE");
+  TX_DEPTH.set(db, 1);
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    try { db.exec("ROLLBACK"); } catch { /* transaction already gone */ }
+    throw err;
+  } finally {
+    TX_DEPTH.set(db, 0);
+  }
 }
 
 function seedIfEmpty(db) {
@@ -154,9 +216,17 @@ export function countMemories(db) {
  *   write the new one as the authoritative fact.
  * Returns { id, merged }.
  */
-export function addMemory(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1.0, noMerge = false }) {
-  const text = normalizeContent(content);
+export function addMemory(db, opts) {
+  return withTransaction(db, () => addMemoryImpl(db, opts));
+}
+
+function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1.0, noMerge = false }) {
+  let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
+  // Bound what a single row may hold. The always-on block truncates around 300
+  // characters when it renders, so anything past MAX_MEMORY_CHARS is storage,
+  // FTS and LIKE-scan cost with no reader on the other end.
+  if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "…";
 
   // Conflict / merge pass against active memories at the same role. `noMerge`
   // is for callers that must end up with a new standalone row (nightly
@@ -445,10 +515,12 @@ const SEED_ID_PATTERN = "mem_0[0-9][0-9]";
  * and the conflict pass in addMemory) without needing to trust those callers.
  */
 export function purgeArchived(db) {
-  db.prepare(
-    `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
-  ).run();
-  db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+  withTransaction(db, () => {
+    db.prepare(
+      `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
+    ).run();
+    db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+  });
 }
 
 /** True when the id belongs to the protected seeded soul memories. */

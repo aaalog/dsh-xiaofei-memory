@@ -2,7 +2,7 @@
 // PRD section 4.3: distill over-densified recent memories into core summaries,
 // archive the originals, then VACUUM + FTS optimize to reclaim space.
 
-import { addMemory, listLayerMemories, listRecentByEntity, archiveMemory, vacuumAndOptimize, purgeArchived, isSeedMemoryId } from "./db.js";
+import { addMemory, listLayerMemories, listRecentByEntity, archiveMemory, vacuumAndOptimize, purgeArchived, isSeedMemoryId, withTransaction } from "./db.js";
 import { normalizeContent, extractEntities, tokenEstimate, isMeaningfulEntity } from "./util.js";
 
 // A fixed threshold of 10 never fires: real stores hold a handful of memories
@@ -33,8 +33,15 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
     threshold: 0, scanned: 0, skippedEntities: 0, skippedGroups: 0, details: [],
   };
 
-  // Group recent memories by shared entity, ignoring noise entities.
-  const groups = new Map(); // entity -> memories[]
+  // Group recent memories by (role, shared entity), ignoring noise entities.
+  //
+  // The role half of the key is load-bearing. `listLayerMemories` returns the
+  // whole layer, so keying by entity alone mixed one role's memories into
+  // another's: the summariser was fed text from both, the summary was written
+  // into whichever role happened to sort first, and the other role's originals
+  // were archived and then physically purged. That is a namespace leak and a
+  // permanent data loss in the same step.
+  const groups = new Map(); // `${roleId}\u0000${entity}` -> { roleId, entity, memories[] }
   const all = listLayerMemories(db, layer);
   stats.scanned = all.length;
   const threshold = distillThreshold(all.length);
@@ -55,11 +62,13 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
   }
 
   for (const m of all) {
+    const roleId = m.role_id ?? "global";
     for (const e of m.entities ?? []) {
       if (!isMeaningfulEntity(e)) continue;
-      if (!groups.has(e)) groups.set(e, []);
-      const arr = groups.get(e);
-      if (arr.length <= 40) arr.push(m);
+      const key = roleId + "\u0000" + e;
+      if (!groups.has(key)) groups.set(key, { roleId, entity: e, memories: [] });
+      const g = groups.get(key);
+      if (g.memories.length <= 40) g.memories.push(m);
     }
   }
 
@@ -69,10 +78,13 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
   // summary and from double-counting `archived`.
   const archivedIds = new Set();
 
-  for (const [entity, memories] of groups) {
+  for (const { roleId, entity, memories } of groups.values()) {
     const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values())
       .filter((m) => !archivedIds.has(m.id));
     if (unique.length <= threshold) { stats.skippedEntities++; continue; }
+    // Defence in depth: the key already scopes the group to one role, but a row
+    // whose role_id changed mid-pass would still poison the summary.
+    if (unique.some((m) => (m.role_id ?? "global") !== roleId)) { stats.skippedEntities++; continue; }
     const ids = unique.map((m) => m.id);
     // Build a distilled summary into core, then archive the originals.
     const texts = unique
@@ -97,28 +109,35 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
       logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
       continue;
     }
-    const res = addMemory(db, {
-      roleId: unique[0].role_id ?? "global",
-      layer: "core",
-      content,
-      entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
-      originIds: ids,
-      strength: 1.0,
-      // The summary must be its own row: merging it into a row from `ids` used
-      // to hand back that id, which the archive loop then archived and purged.
-      noMerge: true,
+    // One group is one unit: summary row + archives commit together, so an
+    // exception can no longer leave a summary written while its originals
+    // survive (duplicates) or originals archived with no summary (loss).
+    const res = withTransaction(db, () => {
+      const written = addMemory(db, {
+        roleId,
+        layer: "core",
+        content,
+        entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
+        originIds: ids,
+        strength: 1.0,
+        // The summary must be its own row: merging it into a row from `ids` used
+        // to hand back that id, which the archive loop then archived and purged.
+        noMerge: true,
+      });
+      for (const id of ids) {
+        // Never distil away the seeded soul memories, and never archive the row
+        // the summary landed in (only reachable if `noMerge` is ever lost).
+        if (isSeedMemoryId(id) || id === written?.id) continue;
+        archiveMemory(db, id);
+        archivedIds.add(id);
+        stats.archived++;
+      }
+      return written;
     });
-    for (const id of ids) {
-      // Never distil away the seeded soul memories, and never archive the row
-      // the summary landed in (only reachable if `noMerge` is ever lost).
-      if (isSeedMemoryId(id) || id === res?.id) continue;
-      archiveMemory(db, id);
-      archivedIds.add(id);
-      stats.archived++;
-    }
     stats.distilledGroups++;
     stats.distilledMemories += ids.length;
     stats.details.push({
+      roleId,
       entity,
       count: ids.length,
       summary: content.slice(0, SUMMARY_MAX_CHARS),

@@ -1,5 +1,5 @@
 // test-engine.mjs — verify dsh-xiaofei-memory engine modules against PRD acceptance.
-import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet } from "./src/db.js";
+import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet, getMemory } from "./src/db.js";
 import { retrieveForPrompt } from "./src/retrieval.js";
 import { CaptureTracker } from "./src/capture.js";
 import { FeedbackManager } from "./src/feedback.js";
@@ -173,6 +173,44 @@ const beforeEv = loadEvolution(db);
 const ev = runEvolution(db, { recallCount: 10, recallCorrections: 6 });
 check("evolution nudges weight down", ev.changed && ev.retrievalWeight < beforeEv.retrievalWeight, `${beforeEv.retrievalWeight} -> ${ev.retrievalWeight}`);
 check("evolution persists to meta", metaGet(db, "evolution.retrievalWeight") !== null);
+
+console.log("== 7b. store hygiene: secrets, length cap, transaction nesting ==");
+{
+  const secretId = addMemory(db, {
+    roleId: "global", layer: "recent", content: "部署机投递密码是123123，回头记得改",
+  }).id;
+  const secretRow = getMemory(db, secretId);
+  check("assigned password is redacted",
+    !String(secretRow.content).includes("123123") && String(secretRow.content).includes("***"),
+    secretRow.content.slice(0, 40));
+  check("the sentence around it survives",
+    String(secretRow.content).includes("部署机投递"), secretRow.content.slice(0, 40));
+
+  const proseId = addMemory(db, {
+    roleId: "global", layer: "recent", content: "密码学里非对称加密的密钥长度要足够大才安全",
+  }).id;
+  const proseRow = getMemory(db, proseId);
+  check("prose about 密码学 is not mistaken for a credential",
+    String(proseRow.content).includes("非对称加密"), proseRow.content.slice(0, 40));
+
+  const longId = addMemory(db, {
+    roleId: "global", layer: "recent", content: "记忆长度上限测试" + "重复内容".repeat(300),
+  }).id;
+  const longRow = getMemory(db, longId);
+  check("over-long content is capped", longRow.content.length <= 401, "len=" + longRow.content.length);
+
+  check("no transaction left open after writes", db.isTransaction === false);
+
+  // A caller may wrap our write in its own transaction (the sleep tests do).
+  // That used to throw "cannot start a transaction within a transaction".
+  db.exec("BEGIN");
+  let nestedOk = true;
+  try {
+    addMemory(db, { roleId: "global", layer: "recent", content: "外层事务里的嵌套写入必须成功落库" });
+  } catch { nestedOk = false; }
+  db.exec("COMMIT");
+  check("write inside an externally opened transaction works", nestedOk);
+}
 
 console.log("== 8. Performance (PRD acceptance #4) ==");
 const t0 = performance.now();

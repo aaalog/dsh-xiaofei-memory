@@ -125,6 +125,51 @@ check("no [object Object] row written", obRows === 0, `n=${obRows}`);
 closeMemoryDb(obDb);
 try { rmSync(obDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
+console.log("== 3b. distillation must stay inside one role ==");
+{
+  // The old grouping key was the entity alone, over a layer-wide query. Two
+  // roles sharing an entity were merged into one group: the summariser saw both
+  // roles' text, the summary landed in whichever role sorted first, and the
+  // other role's originals were archived and then physically purged.
+  const xDir = mkdtempSync(join(tmpdir(), "dshxf-role-"));
+  const xDb = openMemoryDb(join(xDir, "m.sqlite"));
+  const seenInputs = [];
+  for (const t of [
+    "线上接口改动前必须核验真实响应数据",
+    "交付前要跑完所有回归用例并记录结果",
+    "报价表新增供应商维度需要逐层叠加",
+    "分页 tie-breaker 要带一个稳定排序字段",
+  ]) {
+    addMemory(xDb, { roleId: "work", layer: "recent", content: t, entities: ["共同实体"] });
+  }
+  const companionId = addMemory(xDb, {
+    roleId: "companion",
+    layer: "recent",
+    content: "主人今天很累，周末想去海边走走",
+    entities: ["共同实体"],
+  }).id;
+
+  const stats = await runNightlySleep(xDb, {
+    summarize: async (texts) => { seenInputs.push(texts.join(" / ")); return "同角色工作要点的合并摘要"; },
+  });
+
+  const summary = xDb
+    .prepare("SELECT role_id, layer FROM memories WHERE layer='core' AND role_id='work' ORDER BY created_at DESC LIMIT 1")
+    .get();
+  check("summary written into the group's own role", summary?.role_id === "work", JSON.stringify(summary));
+  check("summarizer never saw the other role's text",
+    !seenInputs.some((s) => s.includes("海边")), seenInputs.join(" | ").slice(0, 120));
+  // Count the specific row, not the role: seed mem_008 lives in companion too.
+  const compRow = xDb.prepare("SELECT status FROM memories WHERE id = ?").get(companionId);
+  check("other role's memory is not archived", compRow?.status === "active", JSON.stringify(compRow));
+  check("the over-threshold role still distils", stats.distilledGroups >= 1, "groups=" + stats.distilledGroups);
+  check("details carry the role that was distilled",
+    stats.details.every((d) => d.roleId === "work"), JSON.stringify(stats.details.map((d) => d.roleId)));
+
+  closeMemoryDb(xDb);
+  try { rmSync(xDir, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
 console.log("== 4. seed safety ==");
 const seeds = db.prepare("SELECT count(*) c FROM memories WHERE id GLOB 'mem_0[0-9][0-9]'").get().c;
 check("10 seeds intact after distillation", seeds === 10, "seeds=" + seeds);
