@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS memories (
   strength      REAL NOT NULL DEFAULT 1.0,
   created_at    INTEGER NOT NULL,
   last_accessed INTEGER,
-  status        TEXT NOT NULL DEFAULT 'active'
+  status        TEXT NOT NULL DEFAULT 'active',
+  pinned        INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS entity_index (
   entity     TEXT NOT NULL,
@@ -115,8 +116,24 @@ export function openMemoryDb(dbPath) {
   // logged as a warning, so memories silently never landed. Wait instead.
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  migrate(db);
   seedIfEmpty(db);
   return db;
+}
+
+/**
+ * Additive column migrations for stores created by an older build.
+ * `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a column
+ * added later has to be patched in explicitly or every INSERT naming it fails.
+ */
+function migrate(db) {
+  const columns = db.prepare("PRAGMA table_info(memories)").all().map((c) => c.name);
+  if (!columns.includes("pinned")) {
+    db.exec("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
+  // The seeded soul memories are the identity baseline, so they are pinned by
+  // definition. Idempotent: an existing store gets them pinned on first open.
+  db.prepare("UPDATE memories SET pinned = 1 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
 }
 
 /**
@@ -179,7 +196,7 @@ function seedIfEmpty(db) {
   const row = db.prepare("SELECT COUNT(*) AS n FROM memories").get();
   if (row && row.n > 0) return;
   const insert = db.prepare(
-    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')"
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1)"
   );
   const insEntity = db.prepare(
     "INSERT OR IGNORE INTO entity_index (entity, memory_id, confidence) VALUES (?, ?, 1.0)"
@@ -227,7 +244,7 @@ export function addMemory(db, opts) {
   return withTransaction(db, () => addMemoryImpl(db, opts));
 }
 
-function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1.0, noMerge = false }) {
+function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1.0, noMerge = false, pinned = false }) {
   let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
   // Bound what a single row may hold. The always-on block truncates around 300
@@ -282,8 +299,8 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
 
   const id = newId();
   db.prepare(
-    "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')"
-  ).run(id, roleId, layer, text, toJsonList(entities), toJsonList(originIds), strength, now());
+    "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
+  ).run(id, roleId, layer, text, toJsonList(entities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
   replaceEntities(db, id, entities);
   return { id, merged: false };
 }

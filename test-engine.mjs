@@ -114,7 +114,9 @@ await new Promise((r) => setTimeout(r, 50));
 const after = countMemories(db);
 check("capture added a memory", after >= 11, `active=${after}`);
 const newMem = db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT 1").get();
-check("captured layer inferred", newMem && newMem.layer === "core", `layer=${newMem?.layer}`); // contains 记住 -> core
+// Capture can no longer produce core: the always-on block is identity only
+// (pinned rows). A "记住/必须" hint reaches weekly at most.
+check("captured layer inferred", newMem && newMem.layer === "weekly", `layer=${newMem?.layer}`);
 check("captured content present", newMem && newMem.content.includes("47.104.102.35"));
 
 console.log("== 4b. merge keeps the richer text ==");
@@ -161,11 +163,12 @@ const guardStats = await runNightlySleep(db, {});
 check("no summarizer => distillation skipped (no data loss)",
   guardStats.distilledGroups === 0 && guardStats.archived === 0,
   JSON.stringify({ groups: guardStats.distilledGroups, archived: guardStats.archived }));
+const coreBefore = db.prepare("SELECT count(*) n FROM memories WHERE layer='core' AND status='active'").get().n;
 const sleepStats = await runNightlySleep(db, { summarize: async (texts) => "总结：" + texts[0] });
 check("sleep distilled a core summary", sleepStats.distilledGroups >= 1, JSON.stringify(sleepStats));
 check("sleep archived >=12 originals", sleepStats.archived >= 12, `archived=${sleepStats.archived}`);
 const coreRows = db.prepare("SELECT count(*) n FROM memories WHERE layer='core' AND status='active'").get();
-check("core summaries added", (coreRows?.n ?? 0) > 6, `core=${coreRows?.n}`);
+check("core summaries added", (coreRows?.n ?? 0) > coreBefore, `core ${coreBefore} -> ${coreRows?.n}`);
 const archivedRows = db.prepare("SELECT count(*) n FROM memories WHERE status='archived'").get();
 check("archived purged after vacuum", (archivedRows?.n ?? 0) === 0, `archived=${archivedRows?.n}`);
 

@@ -32,8 +32,17 @@ const BUDGET_SAFETY_TOKENS = 8;
 /**
  * Deterministically select the always-on slice.
  *
- * Order is `strength DESC, created_at DESC, id ASC`: the id tiebreak makes the
- * result total, so identical database state always yields an identical list.
+ * The block is IDENTITY, not "recent activity". A 650-token budget with
+ * strength-then-recency ordering was filled by whatever was captured last: in
+ * the live store only 2 of the 5 identity seeds survived, and a chat fragment
+ * ("这次对了，把多余的返回清掉吧") took a slot and replayed every turn. So the
+ * slice is restricted to `pinned` rows — the seeded soul memories, plus
+ * anything explicitly recorded through `memory_core_add_fact`. Captured
+ * conversation can never reach core any more (see capture.js).
+ *
+ * Order is `pinned DESC, strength DESC, created_at DESC, id ASC`: the id
+ * tiebreak makes the result total, so identical database state always yields an
+ * identical list — which is what keeps the prompt prefix cacheable.
  *
  * @returns {Array<{id:string, content:string, strength:number}>}
  */
@@ -43,6 +52,7 @@ export function selectCoreMemories(db, {
   maxItemChars = 400,
   minStrength = 1.0,
   limit = 12,
+  pinnedOnly = true,
 } = {}) {
   if (!db) return [];
   const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : ["global"];
@@ -50,13 +60,14 @@ export function selectCoreMemories(db, {
   let rows;
   try {
     rows = db.prepare(
-      `SELECT id, content, strength, created_at FROM memories
+      `SELECT id, content, strength, created_at, pinned FROM memories
        WHERE status = 'active' AND layer = 'core'
          AND role_id IN (${placeholders})
          AND strength >= ?
-       ORDER BY strength DESC, created_at DESC, id ASC
+         AND (? = 0 OR pinned = 1)
+       ORDER BY pinned DESC, strength DESC, created_at DESC, id ASC
        LIMIT ?`
-    ).all(...roles, Number(minStrength) || 0, Math.max(1, Number(limit) || 12));
+    ).all(...roles, Number(minStrength) || 0, pinnedOnly ? 1 : 0, Math.max(1, Number(limit) || 12));
   } catch {
     return [];
   }
@@ -195,6 +206,7 @@ export async function installCoreMemoryForAgent(agent, { db, config, resolveRole
         maxTokens: config.coreMemoryMaxTokens,
         maxItemChars: config.coreMemoryMaxItemChars,
         minStrength: config.coreMemoryMinStrength,
+        pinnedOnly: config.coreMemoryPinnedOnly !== false,
       });
       // Second tier: the memories that did not fit, as a compact catalogue.
       // Without this they are invisible to the model even though they exist.

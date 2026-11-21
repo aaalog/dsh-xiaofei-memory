@@ -235,7 +235,8 @@ CREATE TABLE IF NOT EXISTS memories (
   strength      REAL NOT NULL DEFAULT 1.0,
   created_at    INTEGER NOT NULL,
   last_accessed INTEGER,
-  status        TEXT NOT NULL DEFAULT 'active'
+  status        TEXT NOT NULL DEFAULT 'active',
+  pinned        INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS entity_index (
   entity     TEXT NOT NULL,
@@ -359,8 +360,16 @@ function openMemoryDb(dbPath) {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  migrate(db);
   seedIfEmpty(db);
   return db;
+}
+function migrate(db) {
+  const columns = db.prepare("PRAGMA table_info(memories)").all().map((c) => c.name);
+  if (!columns.includes("pinned")) {
+    db.exec("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
+  db.prepare("UPDATE memories SET pinned = 1 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
 }
 var TX_DEPTH = /* @__PURE__ */ new WeakMap();
 var SAVEPOINT_SEQ = 0;
@@ -408,7 +417,7 @@ function seedIfEmpty(db) {
   const row = db.prepare("SELECT COUNT(*) AS n FROM memories").get();
   if (row && row.n > 0) return;
   const insert = db.prepare(
-    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')"
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1)"
   );
   const insEntity = db.prepare(
     "INSERT OR IGNORE INTO entity_index (entity, memory_id, confidence) VALUES (?, ?, 1.0)"
@@ -446,7 +455,7 @@ function countMemories(db) {
 function addMemory(db, opts) {
   return withTransaction(db, () => addMemoryImpl(db, opts));
 }
-function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1, noMerge = false }) {
+function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1, noMerge = false, pinned = false }) {
   let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
   if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "\u2026";
@@ -480,8 +489,8 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   }
   const id = newId();
   db.prepare(
-    "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')"
-  ).run(id, roleId, layer, text, toJsonList(entities), toJsonList(originIds), strength, now());
+    "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
+  ).run(id, roleId, layer, text, toJsonList(entities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
   replaceEntities(db, id, entities);
   return { id, merged: false };
 }
@@ -806,6 +815,7 @@ function stripInjectedContext(text) {
 }
 var MAX_CAPTURE_CHARS = 1500;
 var MAX_EXTRACT_CHARS = 4e3;
+var CAPTURE_STRENGTH = 0.8;
 var CaptureTracker = class {
   constructor({ store, roleOf, logger, extractor }) {
     this.store = store;
@@ -870,12 +880,13 @@ var CaptureTracker = class {
     }
     const entities = (extracted?.entities?.length ? extracted.entities : extractEntities(excerpt)).slice(0, 16);
     let layer = extracted?.layer ?? inferLayer(source);
+    if (layer === "core") layer = "weekly";
     let content = normalizeContent(extracted?.content ?? excerpt);
     if (content.length > MAX_CAPTURE_CHARS) {
       content = content.slice(0, MAX_CAPTURE_CHARS) + "\u2026";
-      if (layer === "core") layer = "weekly";
+      layer = "recent";
     }
-    const res = this.store({ roleId, layer, content, entities });
+    const res = this.store({ roleId, layer, content, entities, strength: CAPTURE_STRENGTH });
     if (res?.merged) {
       this.logger?.info?.(
         `dsh-xiaofei-memory: captured (merged, layer=${layer}, id=${String(res.id).slice(-6)})`
@@ -889,9 +900,8 @@ var CaptureTracker = class {
 };
 function inferLayer(text) {
   const t = text ?? "";
-  const tokens = tokenEstimate(t);
-  if (IMPORTANCE_CORE_RE.test(t)) return "core";
-  if (IMPORTANCE_WEEKLY_RE.test(t) || tokens >= 60) return "weekly";
+  if (IMPORTANCE_CORE_RE.test(t)) return "weekly";
+  if (IMPORTANCE_WEEKLY_RE.test(t) || tokenEstimate(t) >= 60) return "weekly";
   return "recent";
 }
 function makeLlmExtractor(callLlm, { model }) {
@@ -1216,7 +1226,8 @@ function selectCoreMemories(db, {
   maxTokens = 700,
   maxItemChars = 400,
   minStrength = 1,
-  limit = 12
+  limit = 12,
+  pinnedOnly = true
 } = {}) {
   if (!db) return [];
   const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : ["global"];
@@ -1224,13 +1235,14 @@ function selectCoreMemories(db, {
   let rows;
   try {
     rows = db.prepare(
-      `SELECT id, content, strength, created_at FROM memories
+      `SELECT id, content, strength, created_at, pinned FROM memories
        WHERE status = 'active' AND layer = 'core'
          AND role_id IN (${placeholders})
          AND strength >= ?
-       ORDER BY strength DESC, created_at DESC, id ASC
+         AND (? = 0 OR pinned = 1)
+       ORDER BY pinned DESC, strength DESC, created_at DESC, id ASC
        LIMIT ?`
-    ).all(...roles, Number(minStrength) || 0, Math.max(1, Number(limit) || 12));
+    ).all(...roles, Number(minStrength) || 0, pinnedOnly ? 1 : 0, Math.max(1, Number(limit) || 12));
   } catch {
     return [];
   }
@@ -1310,7 +1322,8 @@ async function installCoreMemoryForAgent(agent, { db, config, resolveRoleIds, lo
         roleIds,
         maxTokens: config.coreMemoryMaxTokens,
         maxItemChars: config.coreMemoryMaxItemChars,
-        minStrength: config.coreMemoryMinStrength
+        minStrength: config.coreMemoryMinStrength,
+        pinnedOnly: config.coreMemoryPinnedOnly !== false
       });
       const indexEntries = config.enableMemoryIndex === false ? [] : buildMemoryIndex(db, {
         roleIds,
@@ -1541,9 +1554,9 @@ function getMemoryGraph(db, { roleId = "all", limit = 300, entitiesPerMemory = 6
     }, {})
   };
 }
-function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1, enableIndex = true, indexMaxTokens = 200, indexLimit = 40 } = {}) {
+function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1, enableIndex = true, indexMaxTokens = 200, indexLimit = 40, pinnedOnly = true } = {}) {
   const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
-  const entries = selectCoreMemories(db, { roleIds, maxTokens, maxItemChars, minStrength });
+  const entries = selectCoreMemories(db, { roleIds, maxTokens, maxItemChars, minStrength, pinnedOnly });
   const indexEntries = enableIndex === false ? [] : buildMemoryIndex(db, {
     roleIds,
     excludeIds: entries.map((e) => e.id),
@@ -1605,6 +1618,13 @@ var Config = z.object({
   coreMemoryMaxItemChars: z.number().default(300),
   /** Minimum strength for a memory to be promoted to always-on. */
   coreMemoryMinStrength: z.number().default(1),
+  /**
+   * Restrict the always-on block to `pinned` rows (identity: the seeds plus
+   * facts recorded through memory_core_add_fact). Off restores the old
+   * "strongest and newest core rows" behaviour, which let captured chat fill
+   * the budget and push identity out.
+   */
+  coreMemoryPinnedOnly: z.boolean().default(true),
   /** Second tier: a compact catalogue of memories that did not fit in full. */
   enableMemoryIndex: z.boolean().default(true),
   /** Token budget for the catalogue lines. */
@@ -1628,7 +1648,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261121022626" : "dev";
+var BUILD_STAMP = true ? "20261121025310" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -1851,7 +1871,13 @@ async function apply(ctx, config) {
       });
     },
     addFact({ content, roleId, layer = "recent", entities = [] }) {
-      return addMemory(db, { roleId: roleId ?? config.roleId, layer, content, entities });
+      return addMemory(db, {
+        roleId: roleId ?? config.roleId,
+        layer,
+        content,
+        entities,
+        pinned: layer === "core"
+      });
     },
     damp(id) {
       return feedback.damp(id);
@@ -1970,7 +1996,8 @@ async function apply(ctx, config) {
           roleId: String(args?.roleId ?? config.roleId),
           maxTokens: config.coreMemoryMaxTokens,
           maxItemChars: config.coreMemoryMaxItemChars,
-          minStrength: config.coreMemoryMinStrength
+          minStrength: config.coreMemoryMinStrength,
+          pinnedOnly: config.coreMemoryPinnedOnly !== false
         });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;

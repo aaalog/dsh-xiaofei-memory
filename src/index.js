@@ -55,6 +55,13 @@ export const Config = z.object({
   coreMemoryMaxItemChars: z.number().default(300),
   /** Minimum strength for a memory to be promoted to always-on. */
   coreMemoryMinStrength: z.number().default(1.0),
+  /**
+   * Restrict the always-on block to `pinned` rows (identity: the seeds plus
+   * facts recorded through memory_core_add_fact). Off restores the old
+   * "strongest and newest core rows" behaviour, which let captured chat fill
+   * the budget and push identity out.
+   */
+  coreMemoryPinnedOnly: z.boolean().default(true),
   /** Second tier: a compact catalogue of memories that did not fit in full. */
   enableMemoryIndex: z.boolean().default(true),
   /** Token budget for the catalogue lines. */
@@ -351,7 +358,16 @@ export async function apply(ctx, config) {
       });
     },
     addFact({ content, roleId, layer = "recent", entities = [] }) {
-      return addMemory(db, { roleId: roleId ?? config.roleId, layer, content, entities });
+      // A fact written explicitly at the core layer is identity by intent, so it
+      // is pinned and therefore eligible for the always-on block. Everything
+      // else stays unpinned and is reachable only through retrieval.
+      return addMemory(db, {
+        roleId: roleId ?? config.roleId,
+        layer,
+        content,
+        entities,
+        pinned: layer === "core",
+      });
     },
     damp(id) {
       return feedback.damp(id);
@@ -467,6 +483,7 @@ export async function apply(ctx, config) {
           maxTokens: config.coreMemoryMaxTokens,
           maxItemChars: config.coreMemoryMaxItemChars,
           minStrength: config.coreMemoryMinStrength,
+          pinnedOnly: config.coreMemoryPinnedOnly !== false,
         });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;

@@ -157,9 +157,9 @@ export function getMemoryGraph(db, { roleId = "all", limit = 300, entitiesPerMem
  * right now?" — it reuses the same selection and rendering the prompt section
  * uses, so the page cannot drift from the real injection.
  */
-export function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1.0, enableIndex = true, indexMaxTokens = 200, indexLimit = 40 } = {}) {
+export function previewCoreMemory(db, { roleId = "global", maxTokens = 650, maxItemChars = 300, minStrength = 1.0, enableIndex = true, indexMaxTokens = 200, indexLimit = 40, pinnedOnly = true } = {}) {
   const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : ["global"];
-  const entries = selectCoreMemories(db, { roleIds, maxTokens, maxItemChars, minStrength });
+  const entries = selectCoreMemories(db, { roleIds, maxTokens, maxItemChars, minStrength, pinnedOnly });
   const indexEntries = enableIndex === false
     ? []
     : buildMemoryIndex(db, {

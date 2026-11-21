@@ -90,6 +90,12 @@ export function stripInjectedContext(text) {
 /** A real memory is a sentence or two; anything longer is a paste or a leak. */
 const MAX_CAPTURE_CHARS = 1500;
 const MAX_EXTRACT_CHARS = 4000;
+/**
+ * Captured conversation starts below the always-on threshold on purpose. When
+ * capture wrote at the same 1.0 that gated the block, any fragment captured was
+ * instantly eligible for promotion, and recency did the rest.
+ */
+const CAPTURE_STRENGTH = 0.8;
 
 export class CaptureTracker {
   constructor({ store, roleOf, logger, extractor }) {
@@ -166,14 +172,18 @@ export class CaptureTracker {
 
     const entities = (extracted?.entities?.length ? extracted.entities : extractEntities(excerpt)).slice(0, 16);
     let layer = extracted?.layer ?? inferLayer(source);
+    // Capture never pins, so it never produces an always-on row — direct the
+    // extractor's "core" judgement into weekly instead of silently dropping it
+    // out of the block later.
+    if (layer === "core") layer = "weekly";
     let content = normalizeContent(extracted?.content ?? excerpt);
     if (content.length > MAX_CAPTURE_CHARS) {
       content = content.slice(0, MAX_CAPTURE_CHARS) + "…";
-      // A truncated fragment is not a principle: keep it out of core.
-      if (layer === "core") layer = "weekly";
+      // A truncated fragment is not a principle: keep it out of weekly too.
+      layer = "recent";
     }
 
-    const res = this.store({ roleId, layer, content, entities });
+    const res = this.store({ roleId, layer, content, entities, strength: CAPTURE_STRENGTH });
     if (res?.merged) {
       this.logger?.info?.(
         `dsh-xiaofei-memory: captured (merged, layer=${layer}, id=${String(res.id).slice(-6)})`
@@ -186,12 +196,20 @@ export class CaptureTracker {
   }
 }
 
-/** Heuristic importance -> layer. Core is the highest-value layer. */
+/**
+ * Heuristic importance -> layer.
+ *
+ * Capture never returns "core". The always-on block is reserved for identity
+ * (pinned rows: the seeded soul memories plus facts recorded on purpose via
+ * `memory_core_add_fact`). A conversation fragment that merely contains
+ * 记住/必须/重要 used to be promoted to core and then replayed every turn — in
+ * the live store one such fragment took a slot and pushed three identity seeds
+ * out of the budget. A strong hint now only reaches weekly.
+ */
 function inferLayer(text) {
   const t = text ?? "";
-  const tokens = tokenEstimate(t);
-  if (IMPORTANCE_CORE_RE.test(t)) return "core";
-  if (IMPORTANCE_WEEKLY_RE.test(t) || tokens >= 60) return "weekly";
+  if (IMPORTANCE_CORE_RE.test(t)) return "weekly";
+  if (IMPORTANCE_WEEKLY_RE.test(t) || tokenEstimate(t) >= 60) return "weekly";
   return "recent";
 }
 
