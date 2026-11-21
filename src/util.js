@@ -146,6 +146,15 @@ const NOISE_ENTITIES = new Set([
   // common CJK filler captured by the 2-4 char window
   "目前", "然后", "这个", "那个", "可以", "需要", "如果", "因为", "所以",
   "这样", "那样", "我们", "你们", "他们", "什么", "怎么", "还有", "已经",
+  // Measured on the live store (2026-11-21): these were still ranking as
+  // entities after the first pass — 现在 alone held 25 links and 好的/继续
+  // survived on filler turns. Time adverbs and bare acknowledgements carry no
+  // retrieval signal, so they stay out of the graph.
+  "现在", "刚才", "之前", "之后", "后来", "一下", "看看", "好的", "继续",
+  // "elapsed" leaked in through the runtime trailer before it was stripped
+  // (see INJECTED_TAIL in capture.js); kept here as a second line of defence
+  // so any record captured by an older build cannot keep a graph node alive.
+  "elapsed", "preceding",
 ]);
 
 /**

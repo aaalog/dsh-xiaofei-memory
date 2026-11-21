@@ -160,7 +160,25 @@ var NOISE_ENTITIES = /* @__PURE__ */ new Set([
   "\u4EC0\u4E48",
   "\u600E\u4E48",
   "\u8FD8\u6709",
-  "\u5DF2\u7ECF"
+  "\u5DF2\u7ECF",
+  // Measured on the live store (2026-11-21): these were still ranking as
+  // entities after the first pass — 现在 alone held 25 links and 好的/继续
+  // survived on filler turns. Time adverbs and bare acknowledgements carry no
+  // retrieval signal, so they stay out of the graph.
+  "\u73B0\u5728",
+  "\u521A\u624D",
+  "\u4E4B\u524D",
+  "\u4E4B\u540E",
+  "\u540E\u6765",
+  "\u4E00\u4E0B",
+  "\u770B\u770B",
+  "\u597D\u7684",
+  "\u7EE7\u7EED",
+  // "elapsed" leaked in through the runtime trailer before it was stripped
+  // (see INJECTED_TAIL in capture.js); kept here as a second line of defence
+  // so any record captured by an older build cannot keep a graph node alive.
+  "elapsed",
+  "preceding"
 ]);
 function isMeaningfulEntity(entity) {
   if (typeof entity !== "string") return false;
@@ -1521,7 +1539,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261117073526" : "dev";
+var BUILD_STAMP = true ? "20261121012014" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

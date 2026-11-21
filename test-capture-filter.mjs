@@ -1,5 +1,6 @@
 // test-capture-filter.mjs — the two leaks that put junk into the store.
 import { CaptureTracker } from "./src/capture.js";
+import { isMeaningfulEntity } from "./src/util.js";
 
 let pass = 0, fail = 0;
 const check = (l, c, e = "") => {
@@ -27,6 +28,16 @@ const userMsg = (text, source = { kind: "user" }) => ({
   type: "user/message",
   data: { content: [{ type: "text", text }], source },
 });
+
+console.log("== 0. entity noise filter ==");
+// Measured on the live store (2026-11-21): these still ranked as entities and
+// held graph links, so grouping and distillation would have run on filler.
+for (const filler of ["现在", "好的", "继续", "这个", "什么", "elapsed"]) {
+  check("filler entity rejected: " + filler, !isMeaningfulEntity(filler));
+}
+for (const real of ["SpdiamPriduct", "SQL", "dsh-xiaofei-memory", "豆包"]) {
+  check("real entity kept: " + real, isMeaningfulEntity(real));
+}
 
 console.log("== 1. own injected recall must not be captured ==");
 // This is the exact shape the plugin injects: kind is "dsh-xiaofei-memory",

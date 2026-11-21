@@ -102,7 +102,7 @@ for t in test-engine test-load test-console test-core-memory test-sleep \
 done
 ```
 
-Expected total: **202 passed, 0 failed**. The system default `node` is v16 and
+Expected total: **261 passed, 0 failed**. The system default `node` is v16 and
 has no `node:sqlite`; always pin v22.18.0 or the node bundled with the DSH
 runtime.
 
@@ -161,11 +161,14 @@ db   = os.path.join(pdir, "memory.sqlite")
 
 ## Known state and deferred work
 
-- **B1 nightly distillation is parked.** The threshold is
-  `clamp(ceil(layerSize * 0.15), 3, 10)` and grouping skips noise entities, but
-  with only ~20 memories the largest same-entity cluster is 3–4 across layers,
-  so distillation still never fires. Revisit when the store reaches 100+.
-  The fix direction is cross-layer grouping plus a relative-density threshold.
+- **B1 nightly distillation is volume-unblocked but quality-blocked.** The
+  threshold is `clamp(ceil(layerSize * 0.15), 3, 10)`. At 222 memories
+  (core 16 / weekly 46 / recent 160) the recent threshold is 10, so real
+  candidates do clear it (`SpdiamPriduct` 18 hits, `SQL` 19). Size is no longer
+  the obstacle; entity quality is. Before the second noise pass the single
+  largest "entity" in the store was `Elapsed`, the runtime trailer word, with
+  78 hits and 41 graph links. Fix extraction before expecting useful
+  distillation.
 - **No embeddings.** Retrieval is FTS5 trigram + LIKE + bigram similarity. Two-
   character CJK terms never match FTS (trigram needs 3), so LIKE does the work
   and recall degrades past ~17k rows (measured 305–862 ms at 17.7k).
@@ -174,12 +177,15 @@ db   = os.path.join(pdir, "memory.sqlite")
 - The plugin calls itself a "digital hippocampus" but implements no PPR —
   it is retrieval + 1-hop entity co-occurrence + layer ordering. Do not build
   on the metaphor.
-- **Live naming bug in the code.** `src/capture.js` sets
-  `OWN_SOURCE_KINDS = new Set(["runtime-xiaofei-memory"])`, but `src/index.js`
-  tags its own injection `source.kind: "dsh-xiaofei-memory"`. The set therefore
-  never matches, and self-injection is excluded only because the text also
-  starts with `<memory-recall>`. Fix the set to `dsh-xiaofei-memory`, and keep
-  the prefix guard as the second line of defence.
+- **Two leak defences, and both are load-bearing.** `isNonCapturable` rejects
+  by source kind (`OWN_SOURCE_KINDS`) and then by text prefix;
+  `stripInjectedContext` removes runtime blocks and trailers (`INJECTED_TAIL`)
+  from whatever survives. The trailer regex is line-anchored on purpose — an
+  unanchored version ate the rest of a user's sentence whenever they merely
+  *discussed* the phrase. Test block 10 in `test-capture-filter.mjs` guards it.
+- **Noise entities are re-derived from measurements, not guessed.** Read the
+  live `entity_index` before touching `NOISE_ENTITIES`; a word earns a place
+  there only if it actually held links without carrying retrieval signal.
 
 ## Console / UI landmarks
 
