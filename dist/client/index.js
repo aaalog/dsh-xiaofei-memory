@@ -358,11 +358,128 @@ var styles_default = `/* dsh-xiaofei-memory management console styles */
   color: var(--dshxf-muted, #6e7781);
 }
 .dshxf-warn-tag { background: #fff1c2; color: #7a5b00; }
+
+/* \u2500\u2500 Breathing room \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* The previous pass added a scale but kept the old, tight values in the places
+   that dominate the page: the View's outer padding, the cards, the stat chips
+   and the tab bar. Everything below is the same scale applied at the sizes the
+   layout actually needs, so the page reads as sections rather than one block. */
+.dshxf-view {
+  padding: 22px 26px 44px;
+  gap: 18px;
+}
+.dshxf-inner {
+  gap: 18px;
+  max-width: 1040px;
+}
+.dshxf-card {
+  padding: 18px 20px;
+  gap: 12px;
+  border-radius: 12px;
+}
+.dshxf-card-head {
+  gap: 12px;
+  align-items: baseline;
+}
+.dshxf-view .dshxf-card {
+  min-height: 0;
+}
+
+/* Titles get space above them when they follow content, none when they lead. */
+.dshxf-h {
+  font-size: 17px;
+  margin: 0 0 10px;
+  line-height: 1.35;
+}
+.dshxf-card-head .dshxf-h { margin: 0; }
+
+.dshxf-note {
+  padding: 10px 14px;
+  line-height: 1.7;
+  border-radius: 8px;
+}
+.dshxf-pre {
+  padding: 14px 16px;
+  line-height: 1.7;
+  border-radius: 10px;
+}
+
+/* Numbers: a chip that is wider than its text, with air between the halves. */
+.dshxf-stats {
+  gap: 12px;
+}
+.dshxf-stat {
+  min-width: 104px;
+  padding: 12px 18px;
+  gap: 4px;
+  border-radius: 10px;
+}
+.dshxf-stat b { font-size: 22px; line-height: 1.2; }
+.dshxf-stat span { font-size: 11px; letter-spacing: 0.02em; }
+
+/* Tab bar: separators and target size instead of a strip of cramped labels. */
+.dshxf-tabs {
+  gap: 4px;
+  padding-bottom: 0;
+  margin-bottom: 14px;
+}
+.dshxf-tab {
+  padding: 9px 16px;
+  font-size: 13px;
+  border-radius: 8px 8px 0 0;
+}
+
+/* Action rows: consistent rhythm, and labels that do not jam their inputs. */
+.dshxf-actions {
+  gap: 10px;
+  row-gap: 10px;
+  margin-top: 4px;
+}
+.dshxf-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.dshxf-row {
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+/* The console mounted inside the View used to sit in its own card. */
+.dshxf-console-wrap {
+  margin-top: 4px;
+}
+.dshxf-console-wrap .dshxf-console {
+  gap: 14px;
+  padding: 0;
+}
+
+/* Rows: taller lines, so a list reads as a list and not as a wall. */
+.dshxf-rrow {
+  padding: 12px 6px;
+  gap: 4px;
+}
+.dshxf-rrow-top { gap: 8px; }
+.dshxf-rrow-body { line-height: 1.6; }
+.dshxf-tag { padding: 2px 8px; line-height: 1.5; }
+.dshxf-pager { padding-top: 12px; gap: 6px; }
+
+/* The sea is a map, not a divider: give it room and a caption of its own. */
+.dshxf-sea {
+  margin-top: 2px;
+  margin-bottom: 14px;
+}
+.dshxf-sea-pick {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  gap: 8px;
+}
 `;
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
-var BUILD_STAMP = true ? "20261121063116" : "dev";
+var BUILD_STAMP = true ? "20261121094244" : "dev";
 function useBuildMismatch() {
   const [host, setHost] = React.useState(null);
   React.useEffect(() => {
@@ -443,7 +560,9 @@ function Pager({ page, pages, total, onPage }) {
     n
   )), /* @__PURE__ */ React.createElement("button", { className: "dshxf-pg", disabled: page >= pages, onClick: () => onPage(page + 1) }, "\u4E0B\u4E00\u9875"), /* @__PURE__ */ React.createElement("span", { className: "dshxf-pager-info" }, total, " \u6761 \xB7 ", pages, " \u9875"));
 }
+var hostCtx = void 0;
 function apply(ctx) {
+  hostCtx = ctx;
   try {
     injectCss();
   } catch {
@@ -592,6 +711,8 @@ function MemoryView(_props) {
   const [q, setQ] = React.useState("");
   const [hits, setHits] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  const pageSize = useRowsPerPage(88);
+  const pagedHits = usePaged(hits ?? [], pageSize);
   React.useEffect(() => {
     let alive = true;
     callBridge("core").then((c) => {
@@ -695,10 +816,12 @@ function MemoryView(_props) {
       // ── full console (roles / graph / sleep / system) ────────────────
       // Reuses the Settings page component verbatim: one implementation, two
       // mount points, so the View is never a reduced copy of the real console.
+      // Rendered directly rather than inside a card: wrapping the tab shell in a
+      // bordered box doubles the border and eats the padding the panels need.
       React.createElement(
         "div",
-        { className: "dshxf-card" },
-        React.createElement(ConsolePage, { scope: getScope(window.__ctx__) })
+        { className: "dshxf-console-wrap" },
+        React.createElement(ConsolePage, { scope: getScope(hostCtx) })
       ),
       // ── search ───────────────────────────────────────────────────────
       React.createElement(
@@ -724,21 +847,31 @@ function MemoryView(_props) {
           }, busy ? "\u68C0\u7D22\u4E2D\u2026" : "\u68C0\u7D22")
         ),
         hits === null ? null : React.createElement(
-          "div",
-          { className: "dshxf-list" },
-          hits.length === 0 ? React.createElement("div", { className: "dshxf-note" }, "\u65E0\u5339\u914D") : hits.map((m) => React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(
             "div",
-            { className: "dshxf-mem", key: m.id },
-            React.createElement(
+            { className: "dshxf-rows" },
+            hits.length === 0 ? React.createElement("div", { className: "dshxf-empty" }, "\u65E0\u5339\u914D") : pagedHits.slice.map((m) => React.createElement(
               "div",
-              { className: "dshxf-mem-meta" },
-              React.createElement("span", { className: "dshxf-tag" }, m.layer),
-              React.createElement("span", { className: "dshxf-tag" }, m.roleId),
-              React.createElement("span", { className: "dshxf-str" }, `s=${Number(m.strength).toFixed(2)}`),
-              React.createElement("span", { className: "dshxf-str" }, `score=${Number(m.score).toFixed(3)}`)
-            ),
-            React.createElement("div", { className: "dshxf-mem-body" }, m.content)
-          ))
+              { className: "dshxf-rrow", key: m.id },
+              React.createElement(
+                "div",
+                { className: "dshxf-rrow-top" },
+                React.createElement("span", { className: "dshxf-tag" }, m.layer),
+                React.createElement("span", { className: "dshxf-tag" }, m.roleId),
+                React.createElement("span", { className: "dshxf-tag dshxf-str" }, `\u5F3A\u5EA6 ${Number(m.strength).toFixed(2)}`),
+                React.createElement("span", { className: "dshxf-tag" }, `\u5206 ${Number(m.score).toFixed(3)}`)
+              ),
+              React.createElement("div", { className: "dshxf-rrow-body" }, m.content)
+            ))
+          ),
+          hits.length === 0 ? null : React.createElement(Pager, {
+            page: pagedHits.page,
+            pages: pagedHits.pages,
+            total: hits.length,
+            onPage: pagedHits.setPage
+          })
         )
       )
     )
@@ -759,12 +892,11 @@ function getScope(ctx) {
 function injectCss() {
   try {
     const existing = document.querySelector("style[data-dshxf-console-css]");
-    if (existing) return;
-    const tag = document.createElement("style");
+    const tag = existing ?? document.createElement("style");
     tag.dataset.dshxfConsoleCss = "true";
     tag.dataset.plugin = "dsh-xiaofei-memory";
     tag.textContent = styles_default;
-    document.head.appendChild(tag);
+    if (!existing) document.head.appendChild(tag);
   } catch {
   }
 }

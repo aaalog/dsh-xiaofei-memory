@@ -147,10 +147,17 @@ function Pager({ page, pages, total, onPage }: { page: number; pages: number; to
   );
 }
 
+/**
+ * Host context for this module instance.
+ *
+ * It used to be published as `window.__ctx__`, which handed every other
+ * same-origin plugin the whole host context. Only this module needs it, so it
+ * lives in module scope instead — same capability, no page-global surface.
+ */
+let hostCtx: any = undefined;
+
 export function apply(ctx: any): () => void {
-  // No `window.__ctx__` export: publishing the whole host context on the page
-  // global handed every other same-origin plugin a wider capability surface
-  // than the bridge token ever did. Nothing outside this module read it.
+  hostCtx = ctx;
   try { injectCss(); } catch { /* ignore */ }
   probe("apply");
 
@@ -300,6 +307,8 @@ function MemoryView(_props: any) {
   const [q, setQ] = React.useState("");
   const [hits, setHits] = React.useState<MemRow[] | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const pageSize = useRowsPerPage(88);
+  const pagedHits = usePaged(hits ?? [], pageSize);
 
   React.useEffect(() => {
     let alive = true;
@@ -372,8 +381,10 @@ function MemoryView(_props: any) {
     // ── full console (roles / graph / sleep / system) ────────────────
     // Reuses the Settings page component verbatim: one implementation, two
     // mount points, so the View is never a reduced copy of the real console.
-    React.createElement("div", { className: "dshxf-card" },
-      React.createElement(ConsolePage, { scope: getScope((window as any).__ctx__) })
+    // Rendered directly rather than inside a card: wrapping the tab shell in a
+    // bordered box doubles the border and eats the padding the panels need.
+    React.createElement("div", { className: "dshxf-console-wrap" },
+      React.createElement(ConsolePage, { scope: getScope(hostCtx) })
     ),
 
     // ── search ───────────────────────────────────────────────────────
@@ -395,19 +406,26 @@ function MemoryView(_props: any) {
       ),
       hits === null
         ? null
-        : React.createElement("div", { className: "dshxf-list" },
+        : React.createElement(React.Fragment, null,
+            React.createElement("div", { className: "dshxf-rows" },
+              hits.length === 0
+                ? React.createElement("div", { className: "dshxf-empty" }, "无匹配")
+                : pagedHits.slice.map((m) =>
+                    React.createElement("div", { className: "dshxf-rrow", key: m.id },
+                      React.createElement("div", { className: "dshxf-rrow-top" },
+                        React.createElement("span", { className: "dshxf-tag" }, m.layer),
+                        React.createElement("span", { className: "dshxf-tag" }, m.roleId),
+                        React.createElement("span", { className: "dshxf-tag dshxf-str" }, `强度 ${Number(m.strength).toFixed(2)}`),
+                        React.createElement("span", { className: "dshxf-tag" }, `分 ${Number(m.score).toFixed(3)}`)
+                      ),
+                      React.createElement("div", { className: "dshxf-rrow-body" }, m.content)
+                    ))),
             hits.length === 0
-              ? React.createElement("div", { className: "dshxf-note" }, "无匹配")
-              : hits.map((m) =>
-                  React.createElement("div", { className: "dshxf-mem", key: m.id },
-                    React.createElement("div", { className: "dshxf-mem-meta" },
-                      React.createElement("span", { className: "dshxf-tag" }, m.layer),
-                      React.createElement("span", { className: "dshxf-tag" }, m.roleId),
-                      React.createElement("span", { className: "dshxf-str" }, `s=${Number(m.strength).toFixed(2)}`),
-                      React.createElement("span", { className: "dshxf-str" }, `score=${Number(m.score).toFixed(3)}`)
-                    ),
-                    React.createElement("div", { className: "dshxf-mem-body" }, m.content)
-                  )))
+              ? null
+              : React.createElement(Pager, {
+                  page: pagedHits.page, pages: pagedHits.pages, total: hits.length, onPage: pagedHits.setPage,
+                })
+          )
     )
     )
   );
@@ -425,13 +443,16 @@ function getScope(ctx: any): any {
 
 function injectCss() {
   try {
+    // Always overwrite. The old version returned early when a tag already
+    // existed, which is correct only across a full page load: when the module
+    // is re-evaluated in place the previous tag survives, so the new stylesheet
+    // was never applied and an update looked like it changed nothing.
     const existing = document.querySelector("style[data-dshxf-console-css]");
-    if (existing) return;
-    const tag = document.createElement("style");
+    const tag = existing ?? document.createElement("style");
     tag.dataset.dshxfConsoleCss = "true";
     tag.dataset.plugin = "dsh-xiaofei-memory";
     tag.textContent = cssText;
-    document.head.appendChild(tag);
+    if (!existing) document.head.appendChild(tag);
   } catch { /* ignore */ }
 }
 
