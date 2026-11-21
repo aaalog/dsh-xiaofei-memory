@@ -130,6 +130,14 @@ var styles_default = `/* dsh-xiaofei-memory management console styles */
   align-items: stretch;
   font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);
   color: var(--dsh-fg, #1f2328);
+  /* The View elects a composer overlay (see the root element), which leaves the
+     composer seat absolutely positioned at the bottom of the column at z-index
+     9. This View owns the full area and must paint above that seat, otherwise
+     the conversation's input card shows through the panel. Opaque background is
+     required: the seat is below, not hidden. */
+  position: relative;
+  z-index: 10;
+  background: var(--dsw-alias-bg-base, var(--dsh-bg-1, #fff));
 }
 .dshxf-view > * { flex: none; }
 .dshxf-inner { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 980px; margin: 0 auto; flex: none; }
@@ -479,7 +487,7 @@ var styles_default = `/* dsh-xiaofei-memory management console styles */
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
-var BUILD_STAMP = true ? "20261121094244" : "dev";
+var BUILD_STAMP = true ? "20261121095539" : "dev";
 function useBuildMismatch() {
   const [host, setHost] = React.useState(null);
   React.useEffect(() => {
@@ -747,7 +755,16 @@ function MemoryView(_props) {
   const stale = build.host !== null && build.host !== "unknown" && build.host !== build.client;
   return React.createElement(
     "div",
-    { className: "dshxf-view" },
+    {
+      className: "dshxf-view",
+      // Elect a composer overlay: the shell then gives the View the whole column
+      // as a clipped, full-bleed area and turns the composer seat into an
+      // absolutely positioned layer at the bottom. Own scrolling is this View's
+      // job (`.dshxf-view` is its own scroller), and the opaque background above
+      // the seat means no input box shows through — the same arrangement the
+      // shipped trajectory and stats views use.
+      "data-conversation-composer-overlay": ""
+    },
     React.createElement(
       "div",
       { className: "dshxf-inner" },

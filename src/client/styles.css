@@ -85,6 +85,14 @@
   align-items: stretch;
   font-family: var(--dsh-font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);
   color: var(--dsh-fg, #1f2328);
+  /* The View elects a composer overlay (see the root element), which leaves the
+     composer seat absolutely positioned at the bottom of the column at z-index
+     9. This View owns the full area and must paint above that seat, otherwise
+     the conversation's input card shows through the panel. Opaque background is
+     required: the seat is below, not hidden. */
+  position: relative;
+  z-index: 10;
+  background: var(--dsw-alias-bg-base, var(--dsh-bg-1, #fff));
 }
 .dshxf-view > * { flex: none; }
 .dshxf-inner { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 980px; margin: 0 auto; flex: none; }

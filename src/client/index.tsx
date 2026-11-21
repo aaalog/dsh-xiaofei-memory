@@ -335,7 +335,16 @@ function MemoryView(_props: any) {
   const layers = stats?.byLayer ?? {};
   const build = useBuildMismatch();
   const stale = build.host !== null && build.host !== "unknown" && build.host !== build.client;
-  return React.createElement("div", { className: "dshxf-view" },
+  return React.createElement("div", {
+    className: "dshxf-view",
+    // Elect a composer overlay: the shell then gives the View the whole column
+    // as a clipped, full-bleed area and turns the composer seat into an
+    // absolutely positioned layer at the bottom. Own scrolling is this View's
+    // job (`.dshxf-view` is its own scroller), and the opaque background above
+    // the seat means no input box shows through — the same arrangement the
+    // shipped trajectory and stats views use.
+    "data-conversation-composer-overlay": "",
+  },
     React.createElement("div", { className: "dshxf-inner" },
     stale
       ? React.createElement("div", { className: "dshxf-card dshxf-warn" },
