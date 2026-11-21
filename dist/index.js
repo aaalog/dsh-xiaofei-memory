@@ -58,16 +58,6 @@ function similarity(a, b) {
   for (const g of ga) if (gb.has(g)) inter++;
   return inter / Math.max(1, Math.min(ga.size, gb.size));
 }
-function queryCoverage(query, doc) {
-  if (typeof query !== "string" || typeof doc !== "string") return 0;
-  if (query.length === 0 || doc.length === 0) return 0;
-  const gq = bigrams(query);
-  const gd = bigrams(doc);
-  if (gq.size === 0 || gd.size === 0) return 0;
-  let inter = 0;
-  for (const g of gq) if (gd.has(g)) inter++;
-  return inter / gq.size;
-}
 var QUOTED_RE = /["“”'‘’「」『』《》]([^"“”'‘’「」『』《》]{2,40})["“”'‘’「」『』《》]/g;
 var LATIN_TERM_RE = /\b[A-Z][A-Za-z0-9_\-+.]{1,30}\b/g;
 function extractEntities(text) {
@@ -565,7 +555,8 @@ function archiveMemory(db, id) {
 function touchAccessed(db, id) {
   db.prepare("UPDATE memories SET last_accessed = ? WHERE id = ?").run(now(), id);
 }
-var MAX_SCORED_CANDIDATES = 800;
+var MAX_SCORED_CANDIDATES = 1500;
+var STRENGTH_EXPONENT = 0.5;
 function searchMemories(db, query, roleIds, {
   decay = 0.01,
   limit = 8,
@@ -615,14 +606,22 @@ function searchMemories(db, query, roleIds, {
     const idPlaceholders = Array.from(candidateIds).map(() => "?").join(",");
     rows = db.prepare(
       `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})
-       ORDER BY m.strength DESC, m.created_at DESC, m.id ASC LIMIT ?`
+       ORDER BY length(m.content) ASC, m.id ASC LIMIT ?`
     ).all(...Array.from(candidateIds), MAX_SCORED_CANDIDATES);
   }
   const w = clamp(Number(weight) || 0, 0, 1);
   const floor = clamp(Number(minSim) || 0, 0, 1);
+  const coverTerms = terms.map((t) => t.toLowerCase());
+  const coverage = (haystack) => {
+    if (coverTerms.length === 0) return 0;
+    let hit = 0;
+    for (const term of coverTerms) if (haystack.includes(term)) hit++;
+    return hit / coverTerms.length;
+  };
   const scored = rows.map((r) => {
-    const sim = queryCoverage(q, r.content);
-    const score = (1 - w + w * sim) * (r.strength ?? 1) * timeDecay(r.created_at, decay);
+    const sim = coverage(String(r.content ?? "").toLowerCase());
+    const strengthFactor = Math.pow(Math.max(0.1, r.strength ?? 1), STRENGTH_EXPONENT);
+    const score = (1 - w + w * sim) * strengthFactor * timeDecay(r.created_at, decay);
     return { ...r, entities: parseJsonList(r.entities), _score: score, _sim: sim };
   }).filter((r) => r._sim >= floor);
   scored.sort((a, b) => b._score - a._score);
@@ -696,32 +695,85 @@ function isSeedMemoryId(id) {
 function escapeLike(s) {
   return s.replace(/[!%_]/g, (c) => "!" + c);
 }
+var QUERY_TAIL_CHARS = 600;
+var QUERY_TERM_LIMIT = 12;
+var QUERY_STOP_TERMS = /* @__PURE__ */ new Set([
+  "\u8FD9\u4E2A",
+  "\u90A3\u4E2A",
+  "\u4EC0\u4E48",
+  "\u600E\u4E48",
+  "\u53EF\u4EE5",
+  "\u9700\u8981",
+  "\u5982\u679C",
+  "\u6211\u4EEC",
+  "\u4F60\u4EEC",
+  "\u4ED6\u4EEC",
+  "\u7136\u540E",
+  "\u6240\u4EE5",
+  "\u4F46\u662F",
+  "\u8FD8\u6709",
+  "\u5DF2\u7ECF",
+  "\u5C31\u662F",
+  "\u4E0D\u662F",
+  "\u6CA1\u6709",
+  "\u73B0\u5728",
+  "\u521A\u624D",
+  "\u8FD9\u6837",
+  "\u90A3\u6837",
+  "\u56E0\u4E3A",
+  "\u800C\u4E14",
+  "\u6216\u8005",
+  "\u4E00\u4E2A",
+  "\u4E00\u4E0B",
+  "\u8FD9\u91CC",
+  "\u90A3\u91CC"
+]);
+function trimQueryText(text) {
+  return String(text ?? "").replace(/```[\s\S]*?```/g, " ").slice(-QUERY_TAIL_CHARS);
+}
 function tokenizeQuery(text) {
-  const out = /* @__PURE__ */ new Set();
-  const parts = text.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  for (const p of parts) {
-    if (/[\u4e00-\u9fff]/.test(p)) {
-      out.add(p);
-      const chars = Array.from(p);
-      for (let i = 0; i < chars.length - 1; i++) out.add(chars[i] + chars[i + 1]);
-    } else if (p.length >= 2) {
-      out.add(p);
+  const tail = trimQueryText(text).slice(-QUERY_TAIL_CHARS);
+  const scored = /* @__PURE__ */ new Map();
+  const bump = (term, weight, position) => {
+    const entry = scored.get(term) ?? { hits: 0, last: 0 };
+    entry.hits += weight;
+    entry.last = position;
+    scored.set(term, entry);
+  };
+  tail.split(/[^\p{L}\p{N}]+/u).filter(Boolean).forEach((part, index) => {
+    const position = index + 1;
+    if (/[\u4e00-\u9fff]/.test(part)) {
+      const chars = Array.from(part);
+      for (let i = 0; i < chars.length - 1; i++) {
+        const bigram = chars[i] + chars[i + 1];
+        if (!QUERY_STOP_TERMS.has(bigram)) bump(bigram, 1, position);
+      }
+      if (chars.length >= 2 && chars.length <= 8 && !QUERY_STOP_TERMS.has(part)) {
+        bump(part, 2, position);
+      }
+    } else if (part.length >= 2) {
+      const word = part.toLowerCase();
+      if (!QUERY_STOP_TERMS.has(word)) bump(word, 2, position);
     }
-  }
-  return Array.from(out).slice(0, 24);
+  });
+  return Array.from(scored.entries()).sort((a, b) => b[1].last - a[1].last || b[1].hits - a[1].hits).slice(0, QUERY_TERM_LIMIT).map(([term]) => term);
 }
 function buildFtsQuery(text) {
-  const terms = /* @__PURE__ */ new Set();
-  const parts = text.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  for (const p of parts) {
-    if (/[\u4e00-\u9fff]/.test(p)) {
-      if (p.length >= 3) terms.add(p);
-    } else if (p.length >= 3) {
-      terms.add(p);
+  const tail = trimQueryText(text).slice(-QUERY_TAIL_CHARS);
+  const counts = /* @__PURE__ */ new Map();
+  for (const part of tail.split(/[^\p{L}\p{N}]+/u).filter(Boolean)) {
+    if (/[\u4e00-\u9fff]/.test(part)) {
+      const chars = Array.from(part);
+      for (let i = 0; i + 2 < chars.length; i++) {
+        const trigram = chars[i] + chars[i + 1] + chars[i + 2];
+        counts.set(trigram, (counts.get(trigram) ?? 0) + 1);
+      }
+    } else if (part.length >= 3) {
+      counts.set(part, (counts.get(part) ?? 0) + 2);
     }
   }
-  if (terms.size === 0) return "";
-  return Array.from(terms).slice(0, 12).map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
+  if (counts.size === 0) return "";
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([term]) => `"${term.replace(/"/g, '""')}"`).join(" OR ");
 }
 
 // src/retrieval.js
@@ -1680,7 +1732,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261121034006" : "dev";
+var BUILD_STAMP = true ? "20261121060945" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

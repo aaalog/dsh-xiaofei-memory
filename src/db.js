@@ -419,11 +419,24 @@ export function touchAccessed(db, id) {
 
 /**
  * Upper bound on how many candidates are fetched and scored for one query.
- * A query made of common bigrams can match most of the table; scoring all of it
- * is wasted work because the result is sliced to `limit` anyway. The ranking
- * prefers stronger/younger memories, so trimming the tail is the cheap cut.
+ *
+ * The cap itself is a necessary cost control on a large store, but the ORDER BY
+ * that chose which candidates survive used to be `strength DESC`: a query made
+ * of common words matched thousands of strong rows and the single weak row that
+ * actually answered it never reached scoring. Ranking is now relevance-first, so
+ * the cut must not be made on strength — long rows go last because they cost the
+ * most to score and a distilled fact is short. The real fix for large stores is
+ * a bigram inverted index instead of a LIKE scan.
  */
-const MAX_SCORED_CANDIDATES = 800;
+const MAX_SCORED_CANDIDATES = 1500;
+
+/**
+ * Exponent applied to `strength` in the ranking score. Strength grows without
+ * bound (merges add 0.1, recalls touch it), so using it raw let a popular but
+ * unrelated memory beat the exact answer. At 0.5 it still breaks ties between
+ * equally relevant rows without overriding relevance.
+ */
+const STRENGTH_EXPONENT = 0.5;
 
 /**
  * Hybrid retrieval:
@@ -502,16 +515,33 @@ export function searchMemories(db, query, roleIds, {
     const idPlaceholders = Array.from(candidateIds).map(() => "?").join(",");
     rows = db.prepare(
       `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})
-       ORDER BY m.strength DESC, m.created_at DESC, m.id ASC LIMIT ?`
+       ORDER BY length(m.content) ASC, m.id ASC LIMIT ?`
     ).all(...Array.from(candidateIds), MAX_SCORED_CANDIDATES);
   }
 
   const w = clamp(Number(weight) || 0, 0, 1);
   const floor = clamp(Number(minSim) || 0, 0, 1);
+  // Coverage is measured against the SELECTED query terms, not every bigram in
+  // the raw message. Against the raw text a 2000-character paste has hundreds
+  // of bigrams, so the row that answers it scored ~0.008 and lost to noise that
+  // merely shared one word. This asks the useful question instead: how many of
+  // the query's key terms does this row contain?
+  const coverTerms = terms.map((t) => t.toLowerCase());
+  const coverage = (haystack) => {
+    if (coverTerms.length === 0) return 0;
+    let hit = 0;
+    for (const term of coverTerms) if (haystack.includes(term)) hit++;
+    return hit / coverTerms.length;
+  };
   const scored = rows
     .map((r) => {
-      const sim = queryCoverage(q, r.content);
-      const score = (1 - w + w * sim) * (r.strength ?? 1.0) * timeDecay(r.created_at, decay);
+      const sim = coverage(String(r.content ?? "").toLowerCase());
+      // Strength is a multiplier without an upper bound (it climbs to 5 with
+      // merges and recalls), so a merely *frequent* memory used to outrank the
+      // one that actually answers the question. Dampening it keeps popularity
+      // as a tiebreaker instead of the deciding factor.
+      const strengthFactor = Math.pow(Math.max(0.1, r.strength ?? 1.0), STRENGTH_EXPONENT);
+      const score = (1 - w + w * sim) * strengthFactor * timeDecay(r.created_at, decay);
       return { ...r, entities: parseJsonList(r.entities), _score: score, _sim: sim };
     })
     .filter((r) => r._sim >= floor);
@@ -627,38 +657,99 @@ function escapeLike(s) {
   return s.replace(/[!%_]/g, (c) => "!" + c);
 }
 
-/** Split a query into search terms (CJK runs and latin words). */
-function tokenizeQuery(text) {
-  const out = new Set();
-  const parts = text.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  for (const p of parts) {
-    if (/[\u4e00-\u9fff]/.test(p)) {
-      // Whole CJK run plus its 2-char bigrams (for LIKE substring matching).
-      out.add(p);
-      const chars = Array.from(p);
-      for (let i = 0; i < chars.length - 1; i++) out.add(chars[i] + chars[i + 1]);
-    } else if (p.length >= 2) {
-      out.add(p);
-    }
-  }
-  return Array.from(out).slice(0, 24);
+/**
+ * How much of a user message to treat as the query.
+ *
+ * The ask normally comes last: people paste a stack trace, a diff or a log and
+ * then write the actual question underneath. Reading the whole message meant a
+ * 1600-character paste filled the term budget with the noise at the top, and the
+ * trailing intent never reached the SQL at all.
+ */
+const QUERY_TAIL_CHARS = 600;
+const QUERY_TERM_LIMIT = 12;
+
+/** Filler that matches everything and therefore ranks nothing. */
+const QUERY_STOP_TERMS = new Set([
+  "这个", "那个", "什么", "怎么", "可以", "需要", "如果", "我们", "你们", "他们",
+  "然后", "所以", "但是", "还有", "已经", "就是", "不是", "没有", "现在", "刚才",
+  "这样", "那样", "因为", "而且", "或者", "一个", "一下", "这里", "那里",
+]);
+
+/** Drop pasted payload so only the user's own words remain. */
+function trimQueryText(text) {
+  // Cut the tail FIRST. Filtering long lines before this was wrong: a paste
+  // written as one enormous line took the intent appended to it down with it,
+  // and the query became empty. The intent lives at the end, so keep the end.
+  return String(text ?? "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .slice(-QUERY_TAIL_CHARS);
 }
 
-/** Build an FTS5 (trigram) MATCH query: 3+ char terms, OR-joined. */
+/** Split a query into search terms, ranked by evidence rather than position. */
+function tokenizeQuery(text) {
+  const tail = trimQueryText(text).slice(-QUERY_TAIL_CHARS);
+  const scored = new Map(); // term -> { hits, last }
+  const bump = (term, weight, position) => {
+    const entry = scored.get(term) ?? { hits: 0, last: 0 };
+    entry.hits += weight;
+    entry.last = position;
+    scored.set(term, entry);
+  };
+
+  tail.split(/[^\p{L}\p{N}]+/u).filter(Boolean).forEach((part, index) => {
+    const position = index + 1;
+    if (/[\u4e00-\u9fff]/.test(part)) {
+      const chars = Array.from(part);
+      for (let i = 0; i < chars.length - 1; i++) {
+        const bigram = chars[i] + chars[i + 1];
+        if (!QUERY_STOP_TERMS.has(bigram)) bump(bigram, 1, position);
+      }
+      // A short run is a real phrase worth matching whole; a long one is a
+      // pasted sentence whose bigrams carry the signal.
+      if (chars.length >= 2 && chars.length <= 8 && !QUERY_STOP_TERMS.has(part)) {
+        bump(part, 2, position);
+      }
+    } else if (part.length >= 2) {
+      const word = part.toLowerCase();
+      if (!QUERY_STOP_TERMS.has(word)) bump(word, 2, position);
+    }
+  });
+
+  // Recency of mention first, frequency second: the sentence that states the
+  // ask is at the end, while a pasted log repeats the same noise bigrams many
+  // times. Ranking by frequency alone let that noise outrank the actual
+  // request; ranking by position alone loses emphasis in a short query, so the
+  // two are combined in that order.
+  // 12 rather than 24: a long paste contributes dozens of low-value terms, and
+  // every extra term dilutes `queryCoverage` for the row that actually matches
+  // the ask. Fewer, better terms both rank better and scan faster.
+  return Array.from(scored.entries())
+    .sort((a, b) => (b[1].last - a[1].last) || (b[1].hits - a[1].hits))
+    .slice(0, QUERY_TERM_LIMIT)
+    .map(([term]) => term);
+}
+
+/** Build an FTS5 (trigram) MATCH query from 3-char windows, OR-joined. */
 function buildFtsQuery(text) {
-  const terms = new Set();
-  const parts = text.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  for (const p of parts) {
-    if (/[\u4e00-\u9fff]/.test(p)) {
-      // trigram indexes 3-char sequences; a run of >=3 chars yields trigrams.
-      if (p.length >= 3) terms.add(p);
-    } else if (p.length >= 3) {
-      terms.add(p);
+  const tail = trimQueryText(text).slice(-QUERY_TAIL_CHARS);
+  const counts = new Map();
+  for (const part of tail.split(/[^\p{L}\p{N}]+/u).filter(Boolean)) {
+    if (/[\u4e00-\u9fff]/.test(part)) {
+      // The index stores trigrams, so handing it a whole sentence produces a
+      // phrase that can never match; hand it the windows it actually indexed.
+      const chars = Array.from(part);
+      for (let i = 0; i + 2 < chars.length; i++) {
+        const trigram = chars[i] + chars[i + 1] + chars[i + 2];
+        counts.set(trigram, (counts.get(trigram) ?? 0) + 1);
+      }
+    } else if (part.length >= 3) {
+      counts.set(part, (counts.get(part) ?? 0) + 2);
     }
   }
-  if (terms.size === 0) return "";
-  return Array.from(terms)
+  if (counts.size === 0) return "";
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
     .slice(0, 12)
-    .map((t) => `"${t.replace(/"/g, '""')}"`)
+    .map(([term]) => `"${term.replace(/"/g, '""')}"`)
     .join(" OR ");
 }

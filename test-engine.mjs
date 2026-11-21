@@ -251,6 +251,36 @@ console.log("== 7d. core signature tracks content, not length ==");
     a === coreMemorySignature([{ id: "m1", content: "甲乙丙丁" }]));
 }
 
+console.log("== 7e. a long paste must not erase the ask at the end ==");
+{
+  // People paste a stack trace or a diff and then write the actual question
+  // underneath. The old tokenizer took the first 24 bigrams in appearance
+  // order, so the paste consumed the whole budget and the trailing intent never
+  // reached the SQL: measured as 0 results on a store that held the answer.
+  const role = "longq";
+  const target = addMemory(db, {
+    roleId: role,
+    layer: "weekly",
+    content: "记录12 模块 部署 的接口核验必须对比真实响应数据",
+  }).id;
+  const insNoise = db.prepare(
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status) VALUES (?, ?, 'recent', ?, '[]', 3.0, ?, 'active')"
+  );
+  for (let i = 0; i < 120; i++) {
+    insNoise.run(`noise_${i}`, role, `无关噪声记录编号${i}`, Date.now() - i * 1000);
+  }
+
+  const multiline = ("2026-11-21 10:00:01 ERROR failed to connect to upstream\n").repeat(40) +
+    "帮我查一下 记录12 模块 部署 的接口核验";
+  const oneLine = "以下是贴过来的一大段代码和日志 ".repeat(60) + " 记录12 模块 部署 的接口核验";
+  const fenced = "```js\n" + "const x = 1;\n".repeat(80) + "```\n记录12 模块 部署 的接口核验";
+
+  for (const [label, q] of [["multiline log", multiline], ["single-line paste", oneLine], ["fenced code", fenced]]) {
+    const hits = searchMemories(db, q, [role], { limit: 5 });
+    check(`trailing ask survives a ${label}`, hits.some((h) => h.id === target), `hits=${hits.length}`);
+  }
+}
+
 console.log("== 8. Performance (PRD acceptance #4) ==");
 const t0 = performance.now();
 for (let i = 0; i < 20; i++) {
