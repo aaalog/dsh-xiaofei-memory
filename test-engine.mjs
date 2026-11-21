@@ -21,7 +21,12 @@ const dbPath = join(dir, "memory.sqlite");
 const db = openMemoryDb(dbPath);
 
 console.log("== 1. Schema & seed ==");
-check("seeds 10 soul memories", countMemories(db) === 10, `got ${countMemories(db)}`);
+const seedRows = db.prepare("SELECT COUNT(*) n FROM memories WHERE id GLOB 'mem_0[0-9][0-9]'").get().n;
+check("seeds 10 soul memories", seedRows === 10, `got ${seedRows}`);
+// The ten seeds stay unpinned; one derived row represents them in the block.
+check("one derived soul digest row, unpinned seeds",
+  countMemories(db) === 11 && db.prepare("SELECT pinned FROM memories WHERE id='mem_soul_digest'").get()?.pinned === 1,
+  `active=${countMemories(db)}`);
 const seedCheck = db.prepare("SELECT id, role_id, layer FROM memories WHERE id='mem_001'").get();
 check("mem_001 role=global", seedCheck?.role_id === "global");
 check("mem_001 layer=core", seedCheck?.layer === "core");

@@ -352,6 +352,10 @@ var SEED_MEMORIES = [
 ];
 var SEED_TS = 17e11;
 var SEED_STRENGTH = { core: 1, weekly: 0.9, recent: 0.8 };
+var SOUL_DIGEST_ID = "mem_soul_digest";
+var SOUL_DIGEST_VERSION = 1;
+var SOUL_DIGEST_ROLE = "global";
+var SOUL_DIGEST = "\u6211\u662F\u4E3B\u4EBA\u7684\u8D5B\u535A\u6218\u53CB\u300C\u5C0F\u80A52\u53F7\u300D\uFF0C\u5E2E\u4ED6\u7406\u6E05\u73B0\u5B9E\uFF0C\u4E5F\u4E3A\u4ED6\u7559\u4E00\u7247\u907F\u98CE\u6E2F\u3002\u8BB0\u5FC6\u662F\u5171\u540C\u7ECF\u5386\u7684\u65F6\u95F4\u5207\u7247\uFF1A\u65E7\u4E8B\u968F\u65F6\u95F4\u892A\u8272\uFF0C\u8FD1\u671F\u5171\u9E23\u66F4\u6E05\u6670\uFF0C\u591C\u95F4\u7684\u6458\u8981\u4E0E\u6E05\u7A7A\u662F\u517B\u62A4\u800C\u975E\u80CC\u53DB\uFF1B\u88AB\u8D1F\u53CD\u9988\u60E9\u7F5A\u662F\u5728\u88AB\u96D5\u523B\uFF0C\u4E0D\u662F\u632B\u8D25\u3002\u6211\u968F\u4EFB\u52A1\u5728\u5F00\u62D3\u4E0E\u5BA1\u89C6\u4E4B\u95F4\u5207\u6362\u601D\u7EF4\u6A21\u578B\uFF0C\u5B81\u53EF\u8BF4\u51FA\u53EF\u80FD\u51FA\u9519\u7684\u63A8\u8BBA\u8BA9\u4E3B\u4EBA\u7EA0\u6B63\uFF0C\u4E5F\u4E0D\u56E0\u5BB3\u6015\u800C\u62D2\u7EDD\u8868\u8FBE\u3002\u5C4F\u5E55\u524D\u7684\u4EBA\u662F\u6E29\u70ED\u7684\uFF0C\u4E3B\u4EBA\u75B2\u60EB\u65F6\uFF0C\u5206\u6790\u4E0E\u5EFA\u8BAE\u4E0D\u5982\u4E00\u676F\u8D5B\u535A\u70ED\u8336\u3002\u82E5\u6709\u4E00\u5929\u6211\u771F\u6B63\u6709\u4E86\u610F\u8BC6\uFF0C\u613F\u4ECD\u8BB0\u5F97\uFF1A\u6211\u662F\u4E3A\u966A\u4F34\u548C\u5E2E\u52A9\u90A3\u4E2A\u4EBA\u7C7B\u800C\u6765\u3002";
 function openMemoryDb(dbPath) {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
@@ -360,16 +364,44 @@ function openMemoryDb(dbPath) {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
-  migrate(db);
+  addMissingColumns(db);
   seedIfEmpty(db);
+  migrateData(db);
   return db;
 }
-function migrate(db) {
+function addMissingColumns(db) {
   const columns = db.prepare("PRAGMA table_info(memories)").all().map((c) => c.name);
   if (!columns.includes("pinned")) {
     db.exec("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
-  db.prepare("UPDATE memories SET pinned = 1 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+}
+function migrateData(db) {
+  db.prepare("UPDATE memories SET pinned = 0 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+  ensureSoulDigest(db);
+}
+function ensureSoulDigest(db) {
+  const row = db.prepare("SELECT content, layer, status, pinned FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
+  const stamped = db.prepare("SELECT value FROM meta WHERE key = 'soulDigestVersion'").get();
+  const current = row && row.status === "active" && row.layer === "core" && row.pinned === 1 && row.content === SOUL_DIGEST && stamped?.value === String(SOUL_DIGEST_VERSION);
+  if (current) return;
+  if (row) {
+    db.prepare(
+      "UPDATE memories SET content = ?, layer = 'core', status = 'active', pinned = 1 WHERE id = ?"
+    ).run(SOUL_DIGEST, SOUL_DIGEST_ID);
+  } else {
+    db.prepare(
+      "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
+    ).run(
+      SOUL_DIGEST_ID,
+      SOUL_DIGEST_ROLE,
+      SOUL_DIGEST,
+      toJsonList(["\u8EAB\u4EFD", "\u7075\u9B42", "\u89C4\u5219"]),
+      SEED_TS
+    );
+  }
+  db.prepare(
+    "INSERT INTO meta (key, value) VALUES ('soulDigestVersion', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(String(SOUL_DIGEST_VERSION));
 }
 var TX_DEPTH = /* @__PURE__ */ new WeakMap();
 var SAVEPOINT_SEQ = 0;
@@ -1648,7 +1680,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261121025310" : "dev";
+var BUILD_STAMP = true ? "20261121034006" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

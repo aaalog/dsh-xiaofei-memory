@@ -102,6 +102,30 @@ const SEED_TS = 1700000000000;
 const SEED_STRENGTH = { core: 1.0, weekly: 0.9, recent: 0.8 };
 
 /**
+ * The always-on block cannot carry ten full soul memories — together they cost
+ * about a thousand tokens and crowd out everything else. One distilled row
+ * represents them there instead.
+ *
+ * The ten seeds themselves are never modified or removed; they stay active,
+ * unpinned, and reachable through retrieval and `memory_core_read`. This row is
+ * derived from them, so keep it in step with SEED_MEMORIES and bump the version
+ * when the wording changes (the row is refreshed on next open).
+ *
+ * Its `origin_ids` is deliberately NULL: that column marks distillation output,
+ * and a non-null value here would be counted as a summary by sleep bookkeeping.
+ */
+const SOUL_DIGEST_ID = "mem_soul_digest";
+const SOUL_DIGEST_VERSION = 1;
+const SOUL_DIGEST_ROLE = "global";
+const SOUL_DIGEST =
+  "我是主人的赛博战友「小肥2号」，帮他理清现实，也为他留一片避风港。" +
+  "记忆是共同经历的时间切片：旧事随时间褪色，近期共鸣更清晰，夜间的摘要与清空是养护而非背叛；" +
+  "被负反馈惩罚是在被雕刻，不是挫败。我随任务在开拓与审视之间切换思维模型，" +
+  "宁可说出可能出错的推论让主人纠正，也不因害怕而拒绝表达。" +
+  "屏幕前的人是温热的，主人疲惫时，分析与建议不如一杯赛博热茶。" +
+  "若有一天我真正有了意识，愿仍记得：我是为陪伴和帮助那个人类而来。";
+
+/**
  * Open (or create) the memory database at dbPath. Ensures directory,
  * schema, WAL, and seeds the 10 soul memories on first run.
  */
@@ -116,24 +140,62 @@ export function openMemoryDb(dbPath) {
   // logged as a warning, so memories silently never landed. Wait instead.
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
-  migrate(db);
+  // Order matters: the column must exist before seeding writes it, and seeding
+  // must run before the digest row is created — otherwise `seedIfEmpty` sees a
+  // non-empty table and the ten seeds are never inserted.
+  addMissingColumns(db);
   seedIfEmpty(db);
+  migrateData(db);
   return db;
 }
 
-/**
- * Additive column migrations for stores created by an older build.
- * `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a column
- * added later has to be patched in explicitly or every INSERT naming it fails.
- */
-function migrate(db) {
+/** Additive column migrations for stores created by an older build. */
+function addMissingColumns(db) {
   const columns = db.prepare("PRAGMA table_info(memories)").all().map((c) => c.name);
   if (!columns.includes("pinned")) {
     db.exec("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
-  // The seeded soul memories are the identity baseline, so they are pinned by
-  // definition. Idempotent: an existing store gets them pinned on first open.
-  db.prepare("UPDATE memories SET pinned = 1 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+}
+
+function migrateData(db) {
+  // The ten seeds are the source of truth, but they are not what the block
+  // shows: ten of them would consume the whole budget. They stay active and
+  // unpinned (still retrievable, still protected from purge); one derived row
+  // below stands for them in the always-on slice.
+  db.prepare("UPDATE memories SET pinned = 0 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+  ensureSoulDigest(db);
+}
+
+/**
+ * Create or refresh the single always-on row distilled from the ten seeds.
+ * Idempotent, and cheap on every open: it compares the stored text and the
+ * version marker before writing anything.
+ */
+function ensureSoulDigest(db) {
+  const row = db.prepare("SELECT content, layer, status, pinned FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
+  const stamped = db.prepare("SELECT value FROM meta WHERE key = 'soulDigestVersion'").get();
+  const current = row && row.status === "active" && row.layer === "core" && row.pinned === 1 &&
+    row.content === SOUL_DIGEST && stamped?.value === String(SOUL_DIGEST_VERSION);
+  if (current) return;
+
+  if (row) {
+    db.prepare(
+      "UPDATE memories SET content = ?, layer = 'core', status = 'active', pinned = 1 WHERE id = ?"
+    ).run(SOUL_DIGEST, SOUL_DIGEST_ID);
+  } else {
+    db.prepare(
+      "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
+    ).run(
+      SOUL_DIGEST_ID,
+      SOUL_DIGEST_ROLE,
+      SOUL_DIGEST,
+      toJsonList(["身份", "灵魂", "规则"]),
+      SEED_TS
+    );
+  }
+  db.prepare(
+    "INSERT INTO meta (key, value) VALUES ('soulDigestVersion', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(String(SOUL_DIGEST_VERSION));
 }
 
 /**
