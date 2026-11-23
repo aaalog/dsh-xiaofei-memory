@@ -128,15 +128,33 @@ export function memoryIndexSignature(entries) {
  * the model only ever sees the short handle, but a human may paste the full
  * one. Ambiguous suffixes resolve to null rather than guessing.
  */
-export function resolveMemoryRef(db, ref) {
+/**
+ * Resolve a memory id or short id to one active row.
+ *
+ * `roleIds` restricts the lookup to the caller's namespaces. Without it a short
+ * id — six characters shown in the index — was enough to read any role's
+ * memory in full, which defeats the namespace isolation the rest of the plugin
+ * maintains.
+ *
+ * @param {any} db open database handle
+ * @param {unknown} ref full id, or the short id printed in the index
+ * @param {{ roleIds?: string[] }} [options]
+ * @returns {any | null}
+ */
+export function resolveMemoryRef(db, ref, { roleIds } = {}) {
   const want = String(ref ?? "").trim();
   if (!want || !db) return null;
+  const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : null;
+  const roleSql = roles ? ` AND role_id IN (${roles.map(() => "?").join(",")})` : "";
+  const roleArgs = roles ?? [];
   try {
-    const exact = db.prepare("SELECT * FROM memories WHERE id = ? AND status = 'active'").get(want);
+    const exact = db.prepare(
+      `SELECT * FROM memories WHERE id = ? AND status = 'active'${roleSql}`
+    ).get(want, ...roleArgs);
     if (exact) return exact;
     const rows = db.prepare(
-      "SELECT * FROM memories WHERE status = 'active' AND id LIKE ? LIMIT 3"
-    ).all(`%${want}`);
+      `SELECT * FROM memories WHERE status = 'active'${roleSql} AND id LIKE ? LIMIT 3`
+    ).all(...roleArgs, `%${want}`);
     if (rows.length === 1) return rows[0];
     if (rows.length > 1) {
       // Prefer an exact trailing-segment match over a loose substring hit.

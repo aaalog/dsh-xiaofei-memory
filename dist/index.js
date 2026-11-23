@@ -869,6 +869,19 @@ function renderEntry(m) {
   return `[${tag} \xB7 ${idShort} \xB7 s=${strength}] ${m.content}`;
 }
 
+// src/roles.js
+function isRoleEnabled(roles, roleId) {
+  if (!roleId || roleId === "global") return true;
+  const list = Array.isArray(roles) ? roles : [];
+  const found = list.find((r) => r && r.id === roleId);
+  return found ? found.enabled !== false : true;
+}
+function roleIdsForAgent(roles, agent, fallbackRoleId) {
+  const roleId = agent?.session?.header?.roleId ?? fallbackRoleId;
+  if (!roleId || roleId === "global" || !isRoleEnabled(roles, roleId)) return ["global"];
+  return [roleId, "global"];
+}
+
 // src/capture.js
 var IMPORTANCE_CORE_RE = /(记住|永远|务必|重要|核心|关键|红线|必须|一定|教训|原则|准则|决定)/;
 var IMPORTANCE_WEEKLY_RE = /(计划|项目|目标|方案|架构|设计|开发|部署|长期|后续|接下来|打算)/;
@@ -1310,15 +1323,20 @@ function memoryIndexSignature(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return "";
   return entries.map((e) => `${e.id}:${e.chars}`).join("|");
 }
-function resolveMemoryRef(db, ref) {
+function resolveMemoryRef(db, ref, { roleIds } = {}) {
   const want = String(ref ?? "").trim();
   if (!want || !db) return null;
+  const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : null;
+  const roleSql = roles ? ` AND role_id IN (${roles.map(() => "?").join(",")})` : "";
+  const roleArgs = roles ?? [];
   try {
-    const exact = db.prepare("SELECT * FROM memories WHERE id = ? AND status = 'active'").get(want);
+    const exact = db.prepare(
+      `SELECT * FROM memories WHERE id = ? AND status = 'active'${roleSql}`
+    ).get(want, ...roleArgs);
     if (exact) return exact;
     const rows = db.prepare(
-      "SELECT * FROM memories WHERE status = 'active' AND id LIKE ? LIMIT 3"
-    ).all(`%${want}`);
+      `SELECT * FROM memories WHERE status = 'active'${roleSql} AND id LIKE ? LIMIT 3`
+    ).all(...roleArgs, `%${want}`);
     if (rows.length === 1) return rows[0];
     if (rows.length > 1) {
       const exactTail = rows.filter((r) => shortMemoryId(r.id) === want);
@@ -1792,6 +1810,12 @@ var Config = z.object({
    *  appear in a memory before it is injected (0 disables the floor). */
   recallMinSim: z.number().default(0.3),
   /** Role registry for the management console. Volatile = editable in the console. */
+  /**
+   * Role namespaces. `enabled: false` switches a namespace off for real:
+   * capture stops writing to it, retrieval and the always-on block stop reading
+   * it, and an agent whose session role is disabled falls back to `global`.
+   * Unknown namespaces stay enabled.
+   */
   roles: z.array(z.object({
     id: z.string().required(),
     name: z.string().required(),
@@ -1803,7 +1827,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261123053510" : "dev";
+var BUILD_STAMP = true ? "20261123062021" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -1856,9 +1880,12 @@ async function apply(ctx, config) {
   const logger = ctx.logger;
   logger?.info?.(`dsh-xiaofei-memory: opened ${dbPath} (${countMemories(db)} active memories)`);
   const feedback = new FeedbackManager({ db, dampFactor: config.dampFactor, logger });
+  let liveRoles = Array.isArray(config.roles) ? config.roles.map((r) => ({ ...r })) : [];
   const sessionRole = /* @__PURE__ */ new Map();
   const tracker = new CaptureTracker({
-    store: (args) => addMemory(db, args),
+    // A disabled role stops accepting captures. Silently dropping is right
+    // here: the alternative is storing memories the owner asked not to keep.
+    store: (args) => isRoleEnabled(liveRoles, args?.roleId) ? addMemory(db, args) : null,
     roleOf: (sid) => sessionRole.get(sid) ?? config.roleId,
     logger,
     extractor: config.useLlmExtraction ? makeLlmExtractor(buildLlmCaller(ctx), { model: config.extractionModel }) : null
@@ -1955,10 +1982,7 @@ async function apply(ctx, config) {
         db,
         config,
         // Role isolation: an agent's own roleId plus the shared global namespace.
-        resolveRoleIds: (agent) => {
-          const roleId = agent?.session?.header?.roleId ?? config.roleId;
-          return roleId && roleId !== "global" ? [roleId, "global"] : ["global"];
-        },
+        resolveRoleIds: (agent) => roleIdsForAgent(liveRoles, agent, config.roleId),
         logger
       });
     } catch (e) {
@@ -2008,7 +2032,6 @@ async function apply(ctx, config) {
   const configWriter = (key, value) => {
     config[key] = value;
   };
-  let liveRoles = Array.isArray(config.roles) ? config.roles.map((r) => ({ ...r })) : [];
   registerSettingsSection(ctx, { Config, config, liveRoles, setLiveRoles: (r) => {
     liveRoles = r;
   }, configWriter, logger });
@@ -2290,11 +2313,13 @@ async function apply(ctx, config) {
       // the whole payload.
       render: (_args, v) => [{ type: "text", text: v?.ok ? v.text || "\uFF08\u6CA1\u6709\u547D\u4E2D\u8BB0\u5FC6\uFF09" : "\u68C0\u7D22\u5931\u8D25\u3002" }]
     },
-    async execute(args) {
+    async execute(args, exec) {
       const evolution = loadEvolution(db);
       const recall = retrieveForPrompt(db, {
         query: args?.query,
-        roleIds: [config.roleId, "global"],
+        // The caller's own namespace, not the configured default: an agent
+        // working in another role used to read global only.
+        roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId),
         decay: evolution.timeDecay,
         weight: evolution.retrievalWeight,
         minSim: config.recallMinSim,
@@ -2375,8 +2400,10 @@ async function apply(ctx, config) {
         text: v?.ok ? `[${v.layer} \xB7 ${v.roleId} \xB7 s=${Number(v.strength).toFixed(2)}] ${v.content}` : "\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\uFF08\u53EF\u80FD\u5DF2\u5F52\u6863\u6216 id \u6709\u6B67\u4E49\uFF09\u3002"
       }]
     },
-    async execute(args) {
-      const row = resolveMemoryRef(db, args?.id);
+    async execute(args, exec) {
+      const row = resolveMemoryRef(db, args?.id, {
+        roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId)
+      });
       if (!row) return { ok: false };
       return {
         ok: true,

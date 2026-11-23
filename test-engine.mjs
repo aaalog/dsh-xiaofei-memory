@@ -5,6 +5,8 @@ import { CaptureTracker } from "./src/capture.js";
 import { FeedbackManager } from "./src/feedback.js";
 import { runNightlySleep } from "./src/sleep.js";
 import { coreMemorySignature } from "./src/core-memory.js";
+import { resolveMemoryRef } from "./src/memory-index.js";
+import { isRoleEnabled, roleIdsForAgent } from "./src/roles.js";
 import { loadEvolution, runEvolution } from "./src/evolution.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -364,6 +366,34 @@ console.log("== 7h. credential patterns (no over-redaction) ==");
     const stored = getMemory(db, addMemory(db, { roleId: "scrub-role", layer: "recent", content: text }).id);
     check(`keeps prose: ${text.slice(0, 10)}`, String(stored.content) === text, stored.content.slice(0, 40));
   }
+}
+
+console.log("== 7i. role policy is enforced, not decorative ==");
+{
+  const roles = [
+    { id: "work", enabled: true },
+    { id: "off", enabled: false },
+    { id: "legacy" },
+  ];
+  check("enabled role", isRoleEnabled(roles, "work") === true);
+  check("disabled role", isRoleEnabled(roles, "off") === false);
+  check("unknown role stays enabled", isRoleEnabled(roles, "nobody") === true);
+  check("global always enabled", isRoleEnabled(roles, "global") === true);
+
+  const agent = (roleId) => ({ session: { header: { roleId } } });
+  check("agent reads its own role plus global",
+    JSON.stringify(roleIdsForAgent(roles, agent("work"), "global")) === '["work","global"]',
+    JSON.stringify(roleIdsForAgent(roles, agent("work"), "global")));
+  check("a disabled own-role falls back to global",
+    JSON.stringify(roleIdsForAgent(roles, agent("off"), "global")) === '["global"]');
+  check("no session role uses the configured fallback",
+    JSON.stringify(roleIdsForAgent(roles, undefined, "work")) === '["work","global"]');
+
+  // A short id from the index must not be a key to every namespace.
+  const rid = addMemory(db, { roleId: "secret-role", layer: "recent", content: "别的角色的私密记忆内容" }).id;
+  check("cross-role read is refused", resolveMemoryRef(db, rid, { roleIds: ["global"] }) === null);
+  check("own-role read works", resolveMemoryRef(db, rid, { roleIds: ["secret-role", "global"] })?.id === rid);
+  check("omitting roleIds keeps the unrestricted behaviour", resolveMemoryRef(db, rid)?.id === rid);
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");

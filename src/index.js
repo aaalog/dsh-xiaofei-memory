@@ -9,6 +9,7 @@ import z from "@deepseek-ai/schemastery";
 
 import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
+import { isRoleEnabled, roleIdsForAgent } from "./roles.js";
 import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
@@ -74,6 +75,12 @@ export const Config = z.object({
    *  appear in a memory before it is injected (0 disables the floor). */
   recallMinSim: z.number().default(0.3),
   /** Role registry for the management console. Volatile = editable in the console. */
+  /**
+   * Role namespaces. `enabled: false` switches a namespace off for real:
+   * capture stops writing to it, retrieval and the always-on block stop reading
+   * it, and an agent whose session role is disabled falls back to `global`.
+   * Unknown namespaces stay enabled.
+   */
   roles: z.array(z.object({
     id: z.string().required(),
     name: z.string().required(),
@@ -153,12 +160,19 @@ export async function apply(ctx, config) {
   // --- Feedback manager -------------------------------------------------
   const feedback = new FeedbackManager({ db, dampFactor: config.dampFactor, logger });
 
+  // Live role list: the settings section can rewrite it at runtime, so capture,
+  // retrieval, the always-on block and the tools must all read this one value
+  // rather than the config they were constructed with.
+  let liveRoles = Array.isArray(config.roles) ? config.roles.map((r) => ({ ...r })) : [];
+
   // --- Capture tracker ---------------------------------------------------
   // Write-side role isolation: a captured memory must land in the role
   // namespace of the session it came from, not in the global default.
   const sessionRole = new Map(); // sessionId -> roleId
   const tracker = new CaptureTracker({
-    store: (args) => addMemory(db, args),
+    // A disabled role stops accepting captures. Silently dropping is right
+    // here: the alternative is storing memories the owner asked not to keep.
+    store: (args) => (isRoleEnabled(liveRoles, args?.roleId) ? addMemory(db, args) : null),
     roleOf: (sid) => sessionRole.get(sid) ?? config.roleId,
     logger,
     extractor: config.useLlmExtraction
@@ -282,10 +296,7 @@ export async function apply(ctx, config) {
         db,
         config,
         // Role isolation: an agent's own roleId plus the shared global namespace.
-        resolveRoleIds: (agent) => {
-          const roleId = agent?.session?.header?.roleId ?? config.roleId;
-          return roleId && roleId !== "global" ? [roleId, "global"] : ["global"];
-        },
+        resolveRoleIds: (agent) => roleIdsForAgent(liveRoles, agent, config.roleId),
         logger,
       });
     } catch (e) {
@@ -341,7 +352,6 @@ export async function apply(ctx, config) {
   // The client reads/writes the plugin Config through this section and calls
   // the data operations below through the memory-core service.
   const configWriter = (key, value) => { config[key] = value; };
-  let liveRoles = Array.isArray(config.roles) ? config.roles.map((r) => ({ ...r })) : [];
   registerSettingsSection(ctx, { Config, config, liveRoles, setLiveRoles: (r) => { liveRoles = r; }, configWriter, logger });
 
   // --- Expose memory-core API (PRD 5.2) ---------------------------------
@@ -609,11 +619,13 @@ export async function apply(ctx, config) {
       // the whole payload.
       render: (_args, v) => [{ type: "text", text: v?.ok ? (v.text || "（没有命中记忆）") : "检索失败。" }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const evolution = loadEvolution(db);
       const recall = retrieveForPrompt(db, {
         query: args?.query,
-        roleIds: [config.roleId, "global"],
+        // The caller's own namespace, not the configured default: an agent
+        // working in another role used to read global only.
+        roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId),
         decay: evolution.timeDecay,
         weight: evolution.retrievalWeight,
         minSim: config.recallMinSim,
@@ -702,8 +714,11 @@ export async function apply(ctx, config) {
           : "未找到该记忆（可能已归档或 id 有歧义）。",
       }],
     },
-    async execute(args) {
-      const row = resolveMemoryRef(db, args?.id);
+    async execute(args, exec) {
+      // Knowing a short id used to be enough to read any role's memory.
+      const row = resolveMemoryRef(db, args?.id, {
+        roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId),
+      });
       if (!row) return { ok: false };
       return {
         ok: true,
