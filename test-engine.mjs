@@ -8,7 +8,7 @@ import { coreMemorySignature } from "./src/core-memory.js";
 import { loadEvolution, runEvolution } from "./src/evolution.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rmSync } from "node:fs";
+import { rmSync, mkdtempSync } from "node:fs";
 
 let pass = 0, fail = 0;
 function check(label, cond, extra = "") {
@@ -279,6 +279,36 @@ console.log("== 7e. a long paste must not erase the ask at the end ==");
     const hits = searchMemories(db, q, [role], { limit: 5 });
     check(`trailing ask survives a ${label}`, hits.some((h) => h.id === target), `hits=${hits.length}`);
   }
+}
+
+console.log("== 7f. soul digest is created once, then left alone ==");
+{
+  // The digest is ordinary memory content the owner may edit. Re-asserting the
+  // shipped constant on every open would revert those edits, and re-unpinning
+  // the seeds on every open would undo a deliberate pin.
+  const d = mkdtempSync(join(tmpdir(), "dshxf-digest-"));
+  const file = join(d, "m.sqlite");
+
+  const d1 = openMemoryDb(file);
+  const first = d1.prepare("SELECT content FROM memories WHERE id = 'mem_soul_digest'").get();
+  check("digest created on first open", (first?.content ?? "").length > 50, `len=${(first?.content ?? "").length}`);
+  const seedPins = d1.prepare("SELECT COALESCE(SUM(pinned),0) s FROM memories WHERE id GLOB 'mem_0[0-9][0-9]'").get();
+  check("seeds start unpinned", seedPins?.s === 0, `sum=${seedPins?.s}`);
+  check("one-shot marker recorded", metaGet(d1, "seedPinnedMigrated") === "1");
+  d1.prepare("UPDATE memories SET content = '我改过的身份摘要' WHERE id = 'mem_soul_digest'").run();
+  closeMemoryDb(d1);
+
+  const d2 = openMemoryDb(file);
+  const edited = d2.prepare("SELECT content FROM memories WHERE id = 'mem_soul_digest'").get();
+  check("an edited digest survives a reopen", edited?.content === "我改过的身份摘要", String(edited?.content).slice(0, 16));
+  d2.prepare("UPDATE memories SET pinned = 1 WHERE id = 'mem_001'").run();
+  closeMemoryDb(d2);
+
+  const d3 = openMemoryDb(file);
+  const kept = d3.prepare("SELECT pinned FROM memories WHERE id = 'mem_001'").get();
+  check("a deliberately pinned seed stays pinned", kept?.pinned === 1, `pinned=${kept?.pinned}`);
+  closeMemoryDb(d3);
+  rmSync(d, { recursive: true, force: true });
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");

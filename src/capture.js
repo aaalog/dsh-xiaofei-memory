@@ -2,7 +2,6 @@
 // PRD section 4.1: on turn/end, asynchronously extract facts and fuse them
 // into the store (dedup -> strength bump, conflict -> archive + cover).
 
-import { addMemory } from "./db.js";
 import { extractEntities, normalizeContent, tokenEstimate, clamp } from "./util.js";
 
 const IMPORTANCE_CORE_RE =
@@ -19,6 +18,14 @@ const NON_CAPTURABLE_PREFIXES = [
   "[meow-memory-reflect]",
   "[memory-recall]",
   "<memory-recall>",
+  // Background-job and subagent completion notices reach the session as
+  // ordinary user messages, so nothing in the source tag marks them. The live
+  // store had a 401-character "background job … finished [status: completed,
+  // exit code: 0]" row captured verbatim — runtime chatter, not something the
+  // user said, and worthless as a memory.
+  "background job ",
+  "Background job ",
+  "Background subagent ",
 ];
 
 /** Sources this plugin injects; their kind never starts with "memory". */

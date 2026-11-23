@@ -89,5 +89,15 @@ let crashThrew = false;
 try { exportsObj.apply(crashingCtx); } catch { crashThrew = true; }
 ok(!crashThrew, "apply() does not throw when settings.section is undeclared");
 
+// --- bundle-level contracts that were fixed after shipping broken ---
+ok(code.includes("data-conversation-composer-overlay"),
+  "view elects a composer overlay (full-bleed column, no input card)");
+ok(/\.dshxf-view\s*\{[^}]*z-index:\s*10/.test(code),
+  "view paints above the composer seat (z-index 10)");
+ok(!code.includes("if (existing) return"),
+  "injectCss overwrites an existing style tag instead of skipping");
+ok(code.includes("dshxf-pager") && code.includes("dshxf-rrow"),
+  "row lists and the pager are present");
+
 console.log(`\nRESULT: ${passed} passed, ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

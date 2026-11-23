@@ -2,7 +2,7 @@
 // PRD section 4.3: distill over-densified recent memories into core summaries,
 // archive the originals, then VACUUM + FTS optimize to reclaim space.
 
-import { addMemory, listLayerMemories, listRecentByEntity, archiveMemory, vacuumAndOptimize, purgeArchived, isSeedMemoryId, withTransaction } from "./db.js";
+import { addMemory, listLayerMemories, archiveMemory, vacuumAndOptimize, purgeArchived, isSeedMemoryId, withTransaction } from "./db.js";
 import { normalizeContent, extractEntities, tokenEstimate, isMeaningfulEntity } from "./util.js";
 
 // A fixed threshold of 10 never fires: real stores hold a handful of memories

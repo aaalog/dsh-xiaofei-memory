@@ -7,10 +7,8 @@ import { dirname } from "node:path";
 import {
   newId,
   now,
-  daysSince,
   timeDecay,
   similarity,
-  queryCoverage,
   parseJsonList,
   toJsonList,
   normalizeContent,
@@ -157,13 +155,42 @@ function addMissingColumns(db) {
   }
 }
 
+/** Set once, when the seeds are first unpinned in favour of the digest. */
+const SEED_PIN_MARKER = "seedPinnedMigrated";
+
 function migrateData(db) {
-  // The ten seeds are the source of truth, but they are not what the block
-  // shows: ten of them would consume the whole budget. They stay active and
-  // unpinned (still retrievable, still protected from purge); one derived row
-  // below stands for them in the always-on slice.
-  db.prepare("UPDATE memories SET pinned = 0 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+  // One-shot. Running it on every open took a write lock at startup for no
+  // reason, and it silently re-unpinned a seed the owner had pinned on purpose.
+  if (metaGet(db, SEED_PIN_MARKER) !== "1") {
+    db.prepare("UPDATE memories SET pinned = 0 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+    metaSet(db, SEED_PIN_MARKER, "1");
+  }
   ensureSoulDigest(db);
+}
+
+/**
+ * Create the always-on row distilled from the seeds, if it is missing.
+ *
+ * Deliberately create-only. This row is ordinary memory content that the owner
+ * may edit, and re-asserting the constant on every open would silently revert
+ * those edits — the previous version compared the stored text against the
+ * constant and rewrote it on any difference. To restore the shipped wording,
+ * delete the row; the next open recreates it.
+ */
+function ensureSoulDigest(db) {
+  const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
+  if (row) return;
+
+  db.prepare(
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
+  ).run(
+    SOUL_DIGEST_ID,
+    SOUL_DIGEST_ROLE,
+    SOUL_DIGEST,
+    toJsonList(["身份", "灵魂", "规则"]),
+    SEED_TS
+  );
+  metaSet(db, "soulDigestVersion", String(SOUL_DIGEST_VERSION));
 }
 
 /**
@@ -171,32 +198,6 @@ function migrateData(db) {
  * Idempotent, and cheap on every open: it compares the stored text and the
  * version marker before writing anything.
  */
-function ensureSoulDigest(db) {
-  const row = db.prepare("SELECT content, layer, status, pinned FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
-  const stamped = db.prepare("SELECT value FROM meta WHERE key = 'soulDigestVersion'").get();
-  const current = row && row.status === "active" && row.layer === "core" && row.pinned === 1 &&
-    row.content === SOUL_DIGEST && stamped?.value === String(SOUL_DIGEST_VERSION);
-  if (current) return;
-
-  if (row) {
-    db.prepare(
-      "UPDATE memories SET content = ?, layer = 'core', status = 'active', pinned = 1 WHERE id = ?"
-    ).run(SOUL_DIGEST, SOUL_DIGEST_ID);
-  } else {
-    db.prepare(
-      "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
-    ).run(
-      SOUL_DIGEST_ID,
-      SOUL_DIGEST_ROLE,
-      SOUL_DIGEST,
-      toJsonList(["身份", "灵魂", "规则"]),
-      SEED_TS
-    );
-  }
-  db.prepare(
-    "INSERT INTO meta (key, value) VALUES ('soulDigestVersion', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run(String(SOUL_DIGEST_VERSION));
-}
 
 /**
  * Run `fn` as one atomic write unit.
@@ -442,8 +443,16 @@ const STRENGTH_EXPONENT = 0.5;
  * Hybrid retrieval:
  * 1. FTS5 (trigram) MATCH on content, filtered by role_ids and status='active'.
  * 2. LIKE substring pre-filter (CJK-robust, any length).
- * 3. Score every candidate by query coverage * strength * timeDecay:
- *    score = (1 - weight + weight * queryCoverage) * strength * exp(-decay * days)
+ * 3. Score every candidate by how many of the QUERY'S SELECTED TERMS it
+ *    contains, damped strength, and time decay:
+ *      coverage = matching terms / selected terms
+ *      score    = (1 - weight + weight * coverage) * strength^0.5 * exp(-decay * days)
+ *
+ * `coverage` is deliberately measured against the selected terms rather than
+ * against every bigram of the raw message: a long paste has hundreds of
+ * bigrams, which diluted the row that actually answered it down to ~0.008.
+ * Strength is damped because it grows without bound and used to let a popular
+ * but unrelated row outrank the exact answer.
  *
  * No lexical overlap means no evidence of relevance, so the result is empty
  * unless `allowFallback` is set. Callers that want the old "recent 200"
@@ -454,7 +463,7 @@ export function searchMemories(db, query, roleIds, {
   limit = 8,
   /** Weight of the relevance term (0 = pure strength/decay, 1 = pure relevance). */
   weight = 0.65,
-  /** Relevance floor on queryCoverage(); candidates below it are dropped. */
+  /** Relevance floor on the term coverage above; candidates below it are dropped. */
   minSim = 0,
   /** Opt-in "recent 200" fallback. Only the introspective identity probe uses it. */
   allowFallback = false,

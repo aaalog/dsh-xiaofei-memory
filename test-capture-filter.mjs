@@ -141,5 +141,22 @@ check("mid-line mention is preserved",
   out.some((s) => String(s.content).includes("后面我还要加日志")),
   JSON.stringify(out.map((s) => String(s.content))));
 
+console.log("== 11. runtime completion notices must not be captured ==");
+out = await runTurn([
+  userMsg('background job bash-abc123 (bash: full test round) finished [status: completed, exit code: 0]. Output: RESULT: 20 passed'),
+]);
+check("background-job notice rejected", !out.some((s) => String(s.content).includes("background job")),
+  JSON.stringify(out.map((s) => String(s.content).slice(0, 24))));
+
+out = await runTurn([
+  userMsg("Background subagent reviewer finished and will do no further work unless you send it more."),
+]);
+check("subagent notice rejected", !out.some((s) => String(s.content).includes("Background subagent")));
+
+// A real question about jobs must still be captured: the filter is a prefix
+// match, not a keyword ban.
+out = await runTurn([userMsg("后台任务跑完了吗？把 bash 那个的退出码贴给我看看")]);
+check("genuine message about jobs still captured", out.length > 0, `captured=${out.length}`);
+
 console.log("\nRESULT: " + pass + " passed, " + fail + " failed");
 process.exit(fail === 0 ? 0 : 1);

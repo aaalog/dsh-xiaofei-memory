@@ -365,33 +365,27 @@ function addMissingColumns(db) {
     db.exec("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
 }
+var SEED_PIN_MARKER = "seedPinnedMigrated";
 function migrateData(db) {
-  db.prepare("UPDATE memories SET pinned = 0 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+  if (metaGet(db, SEED_PIN_MARKER) !== "1") {
+    db.prepare("UPDATE memories SET pinned = 0 WHERE id GLOB 'mem_0[0-9][0-9]'").run();
+    metaSet(db, SEED_PIN_MARKER, "1");
+  }
   ensureSoulDigest(db);
 }
 function ensureSoulDigest(db) {
-  const row = db.prepare("SELECT content, layer, status, pinned FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
-  const stamped = db.prepare("SELECT value FROM meta WHERE key = 'soulDigestVersion'").get();
-  const current = row && row.status === "active" && row.layer === "core" && row.pinned === 1 && row.content === SOUL_DIGEST && stamped?.value === String(SOUL_DIGEST_VERSION);
-  if (current) return;
-  if (row) {
-    db.prepare(
-      "UPDATE memories SET content = ?, layer = 'core', status = 'active', pinned = 1 WHERE id = ?"
-    ).run(SOUL_DIGEST, SOUL_DIGEST_ID);
-  } else {
-    db.prepare(
-      "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
-    ).run(
-      SOUL_DIGEST_ID,
-      SOUL_DIGEST_ROLE,
-      SOUL_DIGEST,
-      toJsonList(["\u8EAB\u4EFD", "\u7075\u9B42", "\u89C4\u5219"]),
-      SEED_TS
-    );
-  }
+  const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
+  if (row) return;
   db.prepare(
-    "INSERT INTO meta (key, value) VALUES ('soulDigestVersion', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run(String(SOUL_DIGEST_VERSION));
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
+  ).run(
+    SOUL_DIGEST_ID,
+    SOUL_DIGEST_ROLE,
+    SOUL_DIGEST,
+    toJsonList(["\u8EAB\u4EFD", "\u7075\u9B42", "\u89C4\u5219"]),
+    SEED_TS
+  );
+  metaSet(db, "soulDigestVersion", String(SOUL_DIGEST_VERSION));
 }
 var TX_DEPTH = /* @__PURE__ */ new WeakMap();
 var SAVEPOINT_SEQ = 0;
@@ -562,7 +556,7 @@ function searchMemories(db, query, roleIds, {
   limit = 8,
   /** Weight of the relevance term (0 = pure strength/decay, 1 = pure relevance). */
   weight = 0.65,
-  /** Relevance floor on queryCoverage(); candidates below it are dropped. */
+  /** Relevance floor on the term coverage above; candidates below it are dropped. */
   minSim = 0,
   /** Opt-in "recent 200" fallback. Only the introspective identity probe uses it. */
   allowFallback = false
@@ -856,7 +850,15 @@ var NON_CAPTURABLE_PREFIXES = [
   "[SCHEDULE REMINDER]",
   "[meow-memory-reflect]",
   "[memory-recall]",
-  "<memory-recall>"
+  "<memory-recall>",
+  // Background-job and subagent completion notices reach the session as
+  // ordinary user messages, so nothing in the source tag marks them. The live
+  // store had a 401-character "background job … finished [status: completed,
+  // exit code: 0]" row captured verbatim — runtime chatter, not something the
+  // user said, and worthless as a memory.
+  "background job ",
+  "Background job ",
+  "Background subagent "
 ];
 var OWN_SOURCE_KINDS = /* @__PURE__ */ new Set(["dsh-xiaofei-memory"]);
 function isNonCapturable(source, text) {
@@ -1775,7 +1777,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261121095539" : "dev";
+var BUILD_STAMP = true ? "20261123045015" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
