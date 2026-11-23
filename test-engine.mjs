@@ -311,6 +311,61 @@ console.log("== 7f. soul digest is created once, then left alone ==");
   rmSync(d, { recursive: true, force: true });
 }
 
+console.log("== 7g. credential redaction and real entity confidence ==");
+{
+  // The redaction pass covered the body only; the same text in the entity
+  // column reached the index verbatim, and confidence was a hardcoded 1.0 that
+  // made graphExpand's 0.8 filter a no-op.
+  const id = addMemory(db, {
+    roleId: "conf-role", layer: "recent",
+    content: "部署 接口 核验 必须对比真实响应",
+    entities: ["部署", "凭空推断的实体"],
+  }).id;
+  const conf = Object.fromEntries(
+    db.prepare("SELECT entity, confidence FROM entity_index WHERE memory_id = ?").all(id)
+      .map((r) => [r.entity, r.confidence]),
+  );
+  check("entity present in the text scores 1.0", conf["部署"] === 1, String(conf["部署"]));
+  check("entity absent from the text scores 0.6", conf["凭空推断的实体"] === 0.6, String(conf["凭空推断的实体"]));
+
+  const secretId = addMemory(db, {
+    roleId: "conf-role", layer: "recent",
+    content: "这行正文不含凭据，只是说明",
+    entities: ["password: abcdefgh12345678", "正常实体"],
+  }).id;
+  const kept = db.prepare("SELECT entity FROM entity_index WHERE memory_id = ?").all(secretId).map((r) => r.entity);
+  check("a credential-shaped entity is not indexed", !kept.some((e) => e.includes("abcdefgh")), JSON.stringify(kept));
+  check("ordinary entities still indexed", kept.includes("正常实体"), JSON.stringify(kept));
+
+  // One memory reachable only through an inferred entity.
+  addMemory(db, { roleId: "conf-role", layer: "recent", content: "完全无关的正文内容", entities: ["只能推断的实体"] });
+  check("the 0.8 filter now excludes inferred entities",
+    graphExpand(db, ["只能推断的实体"], ["conf-role"], { confidence: 0.8, limit: 5 }).length === 0);
+  check("lowering the threshold includes them",
+    graphExpand(db, ["只能推断的实体"], ["conf-role"], { confidence: 0.5, limit: 5 }).length > 0);
+}
+
+console.log("== 7h. credential patterns (no over-redaction) ==");
+{
+  const redacted = [
+    ["投递密码是123123", "123123"],
+    ["password is hunter2", "hunter2"],
+    ["验证码 8899，五分钟内有效", "8899"],
+    ["Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "eyJhbGciOiJIUzI1NiJ9"],
+    ["token: abcdefgh12345678", "abcdefgh12345678"],
+  ];
+  for (const [text, secret] of redacted) {
+    const stored = getMemory(db, addMemory(db, { roleId: "scrub-role", layer: "recent", content: text }).id);
+    check(`redacts ${JSON.stringify(secret)}`, !String(stored.content).includes(secret) && String(stored.content).includes("***"),
+      stored.content.slice(0, 40));
+  }
+  const preserved = ["密码学里非对称加密的密钥长度要足够大", "验证码五分钟内有效", "这个项目的验证码机制设计得不错"];
+  for (const text of preserved) {
+    const stored = getMemory(db, addMemory(db, { roleId: "scrub-role", layer: "recent", content: text }).id);
+    check(`keeps prose: ${text.slice(0, 10)}`, String(stored.content) === text, stored.content.slice(0, 40));
+  }
+}
+
 console.log("== 8. Performance (PRD acceptance #4) ==");
 const t0 = performance.now();
 for (let i = 0; i < 20; i++) {

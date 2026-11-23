@@ -487,7 +487,7 @@ var styles_default = `/* dsh-xiaofei-memory management console styles */
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
-var BUILD_STAMP = true ? "20261123045015" : "dev";
+var BUILD_STAMP = true ? "20261123053510" : "dev";
 function useBuildMismatch() {
   const [host, setHost] = React.useState(null);
   React.useEffect(() => {

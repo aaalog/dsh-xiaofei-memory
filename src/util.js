@@ -43,8 +43,17 @@ export const MAX_MEMORY_CHARS = 400;
  */
 const SECRET_PATTERNS = [
   /((?:密码|口令|password|passwd|pwd)\s*(?:[:：=]|是|为)\s*)[^\s，。；,;]{4,}/gi,
+  // English copula, kept separate so the CJK rule stays tight around 是/为.
+  /((?:password|passwd|pwd)\s+(?:is|are)\s+)[^\s,;]{4,}/gi,
   /((?:api[_-]?key|apikey|token|secret|access[_-]?key)\s*[:：=]\s*)[A-Za-z0-9_\-.]{8,}/gi,
   /\bsk-[A-Za-z0-9]{10,}\b/g,
+  // One-time verification codes: worthless as a memory, a live credential while
+  // they last. The separator is optional because "验证码 8899" is the common form,
+  // but the value must be latin/digits — otherwise "验证码五分钟内有效" matches.
+  /((?:验证码|校验码|动态码|verification\s+code|otp)\s*(?:[:：=]|是|为|is)?\s*)[A-Za-z0-9]{4,8}\b/gi,
+  // Authorization headers, with or without the header name.
+  /((?:authorization\s*[:：]\s*)(?:bearer|basic|token)\s+)[A-Za-z0-9._\-+/=]{8,}/gi,
+  /\bbearer\s+[A-Za-z0-9._\-+/=]{16,}/gi,
 ];
 
 /**

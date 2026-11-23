@@ -314,6 +314,8 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   // characters when it renders, so anything past MAX_MEMORY_CHARS is storage,
   // FTS and LIKE-scan cost with no reader on the other end.
   if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "…";
+  // The entity column is not covered by the body redaction above.
+  const cleanEntities = sanitizeEntities(entities);
 
   // Conflict / merge pass against active memories at the same role. `noMerge`
   // is for callers that must end up with a new standalone row (nightly
@@ -335,7 +337,7 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
     if (sim >= 0.92) {
       // merge: strengthen the existing memory, extend its entities.
       const existing = getMemory(db, c.id);
-      const mergedEntities = Array.from(new Set([...(existing.entities ?? []), ...entities])).slice(0, 20);
+      const mergedEntities = Array.from(new Set([...(existing.entities ?? []), ...cleanEntities])).slice(0, 20);
       const mergedStrength = clamp((existing.strength ?? 1.0) + 0.1, 0.1, 5);
       const mergedOrigin = Array.from(new Set([...(existing.originIds ?? []), ...originIds])).slice(-20);
       // Keep the richer text. Merging used to leave the old content untouched,
@@ -346,7 +348,7 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       db.prepare(
         "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
       ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
-      replaceEntities(db, c.id, mergedEntities);
+      replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
     if (sim >= 0.75) {
@@ -363,19 +365,55 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   const id = newId();
   db.prepare(
     "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
-  ).run(id, roleId, layer, text, toJsonList(entities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
-  replaceEntities(db, id, entities);
+  ).run(id, roleId, layer, text, toJsonList(cleanEntities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
+  replaceEntities(db, id, cleanEntities, text);
   return { id, merged: false };
 }
 
-function replaceEntities(db, memoryId, entities) {
+function replaceEntities(db, memoryId, entities, content = "") {
   db.prepare("DELETE FROM entity_index WHERE memory_id = ?").run(memoryId);
   const ins = db.prepare(
     "INSERT OR IGNORE INTO entity_index (entity, memory_id, confidence) VALUES (?, ?, ?)"
   );
   for (const e of Array.from(new Set(entities)).slice(0, 20)) {
-    ins.run(e, memoryId, 1.0);
+    ins.run(e, memoryId, entityConfidence(e, content));
   }
+}
+
+/**
+ * How strongly an entity is bound to the row it indexes.
+ *
+ * The column was a hardcoded 1.0, which made `graphExpand`'s
+ * `confidence >= 0.8` filter a no-op — it had never excluded anything. The
+ * honest distinction the extractor supports is whether the entity is actually
+ * in the text: a term that appears in the content is a real handle on that
+ * memory, while one that does not was inferred from context and must not seed a
+ * graph walk.
+ */
+const ENTITY_IN_TEXT = 1.0;
+const ENTITY_INFERRED = 0.6;
+
+function entityConfidence(entity, content) {
+  const hay = String(content ?? "").toLowerCase();
+  if (!hay) return ENTITY_INFERRED;
+  return hay.includes(String(entity).toLowerCase()) ? ENTITY_IN_TEXT : ENTITY_INFERRED;
+}
+
+/**
+ * Entity strings are stored in their own column, and the redaction pass only
+ * covered `content`: an entity shaped like a credential reached the index
+ * verbatim while the same text in the body was redacted. A value that had to be
+ * redacted is dropped rather than kept as `***`, because it cannot be a useful
+ * handle on the memory either way.
+ */
+function sanitizeEntities(entities) {
+  const out = [];
+  for (const raw of Array.isArray(entities) ? entities : []) {
+    const value = scrubSecrets(String(raw ?? "")).trim();
+    if (!value || value.includes("***")) continue;
+    out.push(value);
+  }
+  return out;
 }
 
 /** Read one memory row (with parsed entities/origin_ids). */

@@ -25,8 +25,17 @@ function timeDecay(createdAt, factor = 0.01) {
 var MAX_MEMORY_CHARS = 400;
 var SECRET_PATTERNS = [
   /((?:密码|口令|password|passwd|pwd)\s*(?:[:：=]|是|为)\s*)[^\s，。；,;]{4,}/gi,
+  // English copula, kept separate so the CJK rule stays tight around 是/为.
+  /((?:password|passwd|pwd)\s+(?:is|are)\s+)[^\s,;]{4,}/gi,
   /((?:api[_-]?key|apikey|token|secret|access[_-]?key)\s*[:：=]\s*)[A-Za-z0-9_\-.]{8,}/gi,
-  /\bsk-[A-Za-z0-9]{10,}\b/g
+  /\bsk-[A-Za-z0-9]{10,}\b/g,
+  // One-time verification codes: worthless as a memory, a live credential while
+  // they last. The separator is optional because "验证码 8899" is the common form,
+  // but the value must be latin/digits — otherwise "验证码五分钟内有效" matches.
+  /((?:验证码|校验码|动态码|verification\s+code|otp)\s*(?:[:：=]|是|为|is)?\s*)[A-Za-z0-9]{4,8}\b/gi,
+  // Authorization headers, with or without the header name.
+  /((?:authorization\s*[:：]\s*)(?:bearer|basic|token)\s+)[A-Za-z0-9._\-+/=]{8,}/gi,
+  /\bbearer\s+[A-Za-z0-9._\-+/=]{16,}/gi
 ];
 function scrubSecrets(text) {
   let out = String(text ?? "");
@@ -475,6 +484,7 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
   if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "\u2026";
+  const cleanEntities = sanitizeEntities(entities);
   const exact = noMerge ? null : db.prepare(
     "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' AND content = ? LIMIT 1"
   ).get(roleId, text);
@@ -486,14 +496,14 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
     const sim = similarity(text, c.content);
     if (sim >= 0.92) {
       const existing = getMemory(db, c.id);
-      const mergedEntities = Array.from(/* @__PURE__ */ new Set([...existing.entities ?? [], ...entities])).slice(0, 20);
+      const mergedEntities = Array.from(/* @__PURE__ */ new Set([...existing.entities ?? [], ...cleanEntities])).slice(0, 20);
       const mergedStrength = clamp((existing.strength ?? 1) + 0.1, 0.1, 5);
       const mergedOrigin = Array.from(/* @__PURE__ */ new Set([...existing.originIds ?? [], ...originIds])).slice(-20);
       const mergedContent = text.length > (existing.content?.length ?? 0) ? text : existing.content;
       db.prepare(
         "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
       ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
-      replaceEntities(db, c.id, mergedEntities);
+      replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
     if (sim >= 0.75) {
@@ -506,18 +516,34 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   const id = newId();
   db.prepare(
     "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
-  ).run(id, roleId, layer, text, toJsonList(entities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
-  replaceEntities(db, id, entities);
+  ).run(id, roleId, layer, text, toJsonList(cleanEntities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
+  replaceEntities(db, id, cleanEntities, text);
   return { id, merged: false };
 }
-function replaceEntities(db, memoryId, entities) {
+function replaceEntities(db, memoryId, entities, content = "") {
   db.prepare("DELETE FROM entity_index WHERE memory_id = ?").run(memoryId);
   const ins = db.prepare(
     "INSERT OR IGNORE INTO entity_index (entity, memory_id, confidence) VALUES (?, ?, ?)"
   );
   for (const e of Array.from(new Set(entities)).slice(0, 20)) {
-    ins.run(e, memoryId, 1);
+    ins.run(e, memoryId, entityConfidence(e, content));
   }
+}
+var ENTITY_IN_TEXT = 1;
+var ENTITY_INFERRED = 0.6;
+function entityConfidence(entity, content) {
+  const hay = String(content ?? "").toLowerCase();
+  if (!hay) return ENTITY_INFERRED;
+  return hay.includes(String(entity).toLowerCase()) ? ENTITY_IN_TEXT : ENTITY_INFERRED;
+}
+function sanitizeEntities(entities) {
+  const out = [];
+  for (const raw of Array.isArray(entities) ? entities : []) {
+    const value = scrubSecrets(String(raw ?? "")).trim();
+    if (!value || value.includes("***")) continue;
+    out.push(value);
+  }
+  return out;
 }
 function getMemory(db, id) {
   const row = db.prepare("SELECT * FROM memories WHERE id = ?").get(id);
@@ -1777,7 +1803,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261123045015" : "dev";
+var BUILD_STAMP = true ? "20261123053510" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
