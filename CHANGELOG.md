@@ -60,6 +60,11 @@ sees on every turn.
 - **`enableSleepSummarizer`**: the nightly summariser no longer requires
   `useLlmExtraction`, which also sends every captured turn through the model.
   Distillation needs one call per group at 03:00, not a per-turn cost.
+- **The LLM caller speaks the service's actual API.** The host `llm` service
+  exposes `stream()`, not `complete()`; the caller looked only for `complete` and
+  returned null when it was missing, so capture extraction and the nightly
+  summariser both fell back to the heuristic without a word. A streaming
+  assembly replaces it, resolving the provider from the configured model id.
 - **Cross-process lease** so the nightly pass runs once even when two windows are
   open; taken by both the scheduled and the manual path, released in `finally`.
 - **Credential redaction** on write: assigned passwords, one-time verification
@@ -92,6 +97,11 @@ sees on every turn.
 
 ### Fixed
 
+- **Bridge authentication prefers the injected token.** The cookie gate was
+  consulted first and rejected a request before its token was read, so any
+  client holding the panel's token but no browser session — a script, a future
+  CLI — was locked out. The token is checked first now; the session cookie
+  remains the browser's path.
 - **Cross-role distillation**: a group mixed two roles' memories, wrote the
   summary into one and purged the other's originals. Groups are keyed by
   `(role_id, entity)`.

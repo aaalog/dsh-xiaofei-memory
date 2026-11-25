@@ -128,7 +128,8 @@
   常驻块预览 + 统计 + 内嵌控制台。声明 `data-conversation-composer-overlay`，占满整列、不显示对话输入框。
 - **Settings 面板**（`settings.section`）：角色、记忆图谱、夜间睡眠（含执行记录）、底层系统。
 - 列表统一为**行式 + 分页**（每页 ≤12 条，按窗口高度自适应）；一套间距/字号刻度。
-- 数据经 `POST /dshxf/bridge` 获取，token 由 `webserver/index-inject` 注入页面。
+- 数据经 `POST /dshxf/bridge` 获取。鉴权顺序：**先看 `x-dshxf-token`**（token 由
+  `webserver/index-inject` 注入页面，脚本也可直接用），再退到 DSH 的会话 cookie。
 
 ## 构建与安装
 

@@ -1025,6 +1025,61 @@ function releaseLease(db, key) {
   }
 }
 
+// src/llm-call.js
+async function resolveModelRoute(llm, model) {
+  const wanted = String(model ?? "").trim();
+  if (!wanted || !llm) return null;
+  const ids = [];
+  try {
+    const providers = await llm.listProviders();
+    for (const entry of Array.isArray(providers) ? providers : []) {
+      const id = typeof entry === "string" ? entry : entry?.id;
+      if (id) ids.push(String(id));
+    }
+  } catch {
+  }
+  for (const provider of ids) {
+    try {
+      const models = await llm.listModels(provider);
+      const hit = (Array.isArray(models) ? models : []).find((m) => (typeof m === "string" ? m : m?.id) === wanted);
+      if (hit) return { provider, model: typeof hit === "string" ? hit : hit.id };
+    } catch {
+    }
+  }
+  return ids.length > 0 ? { provider: ids[0], model: wanted } : null;
+}
+function buildLlmCaller(ctx) {
+  const llm = ctx?.get?.("llm");
+  if (!llm) return null;
+  return async (prompt, { model } = {}) => {
+    const text = String(prompt ?? "");
+    if (!text) return null;
+    try {
+      if (typeof llm.complete === "function") {
+        const answer2 = await llm.complete(text, { model });
+        return typeof answer2 === "string" && answer2.trim() ? answer2.trim() : null;
+      }
+      if (typeof llm.stream !== "function") return null;
+      const route = await resolveModelRoute(llm, model);
+      if (!route) return null;
+      let assembled = "";
+      const stream = llm.stream({
+        provider: route.provider,
+        model: route.model,
+        messages: [{ role: "user", content: [{ type: "text", text }] }]
+      });
+      for await (const chunk of stream) {
+        if (chunk?.type === "text-delta") assembled += String(chunk.text ?? "");
+        else if (chunk?.type === "finish" && chunk.reason?.kind === "error") return null;
+      }
+      const answer = assembled.trim();
+      return answer || null;
+    } catch {
+      return null;
+    }
+  };
+}
+
 // src/capture.js
 var IMPORTANCE_CORE_RE = /(记住|永远|务必|重要|核心|关键|红线|必须|一定|教训|原则|准则|决定)/;
 var IMPORTANCE_WEEKLY_RE = /(计划|项目|目标|方案|架构|设计|开发|部署|长期|后续|接下来|打算)/;
@@ -2061,7 +2116,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125071229" : "dev";
+var BUILD_STAMP = true ? "20261125101104" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2474,27 +2529,26 @@ async function apply(ctx, config) {
                   sendJson(res, 405, { ok: false, error: "method not allowed" });
                   return;
                 }
-                let authorized = false;
-                let connection;
-                try {
-                  connection = typeof ctx.get === "function" ? ctx.get("connection") : void 0;
-                } catch {
-                }
-                if (connection && typeof connection.admit === "function") {
-                  let admission;
+                const presented = String(req.headers["x-dshxf-token"] ?? "");
+                let authorized = presented.length > 0 && presented === bridgeToken;
+                if (!authorized) {
+                  let connection;
                   try {
-                    admission = connection.admit(req);
+                    connection = typeof ctx.get === "function" ? ctx.get("connection") : void 0;
                   } catch {
-                    admission = void 0;
                   }
-                  if (admission && "rejection" in admission) {
-                    sendJson(res, admission.rejection ?? 401, { ok: false, error: "unauthorized" });
-                    return;
+                  if (connection && typeof connection.admit === "function") {
+                    let admission;
+                    try {
+                      admission = connection.admit(req);
+                    } catch {
+                      admission = void 0;
+                    }
+                    if (admission !== void 0 && !("rejection" in admission)) authorized = true;
                   }
-                  authorized = admission !== void 0;
                 }
-                if (!authorized && String(req.headers["x-dshxf-token"] ?? "") !== bridgeToken) {
-                  sendJson(res, 403, { ok: false, error: "forbidden" });
+                if (!authorized) {
+                  sendJson(res, 401, { ok: false, error: "unauthorized" });
                   return;
                 }
                 const body = await readBody(req);
@@ -2731,16 +2785,6 @@ async function apply(ctx, config) {
 function buildSummarizer(ctx, config) {
   if (!config.enableSleepSummarizer && !config.useLlmExtraction) return null;
   return buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel);
-}
-function buildLlmCaller(ctx) {
-  const llm = ctx.get?.("llm");
-  if (!llm) return null;
-  return async (prompt, { model } = {}) => {
-    if (typeof llm.complete === "function") {
-      return llm.complete(prompt, { model });
-    }
-    return null;
-  };
 }
 function buildSleepSummarizer(callLlm, model) {
   if (typeof callLlm !== "function") return null;

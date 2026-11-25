@@ -11,6 +11,7 @@ import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet
 import { retrieveForPrompt } from "./retrieval.js";
 import { isRoleEnabled, roleIdsForAgent } from "./roles.js";
 import { claimLease, releaseLease } from "./lease.js";
+import { buildLlmCaller } from "./llm-call.js";
 import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
@@ -598,20 +599,26 @@ export async function apply(ctx, config) {
                 // session cookie, and connection.admit() is the same gate the
                 // /api bridge uses. The injected token stays as a fallback for
                 // compositions that mount a web server without a connection.
-                let authorized = false;
-                let connection;
-                try { connection = typeof ctx.get === "function" ? ctx.get("connection") : undefined; } catch { /* ignore */ }
-                if (connection && typeof connection.admit === "function") {
-                  let admission;
-                  try { admission = connection.admit(req); } catch { admission = undefined; }
-                  if (admission && "rejection" in admission) {
-                    sendJson(res, admission.rejection ?? 401, { ok: false, error: "unauthorized" });
-                    return;
+                // The injected token is a bearer credential for this panel,
+                // so it is checked FIRST. Asking `connection.admit()` first
+                // meant a client holding a valid token — a script, a future
+                // CLI, anything without the browser's session cookie — was
+                // rejected before its token was ever read, while the cookie-less
+                // path is exactly what the token exists for. The cookie check
+                // remains for the browser.
+                const presented = String(req.headers["x-dshxf-token"] ?? "");
+                let authorized = presented.length > 0 && presented === bridgeToken;
+                if (!authorized) {
+                  let connection;
+                  try { connection = typeof ctx.get === "function" ? ctx.get("connection") : undefined; } catch { /* ignore */ }
+                  if (connection && typeof connection.admit === "function") {
+                    let admission;
+                    try { admission = connection.admit(req); } catch { admission = undefined; }
+                    if (admission !== undefined && !("rejection" in admission)) authorized = true;
                   }
-                  authorized = admission !== undefined;
                 }
-                if (!authorized && String(req.headers["x-dshxf-token"] ?? "") !== bridgeToken) {
-                  sendJson(res, 403, { ok: false, error: "forbidden" });
+                if (!authorized) {
+                  sendJson(res, 401, { ok: false, error: "unauthorized" });
                   return;
                 }
                 const body = await readBody(req);
@@ -887,17 +894,6 @@ function buildSummarizer(ctx, config) {
   return buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel);
 }
 
-function buildLlmCaller(ctx) {
-  const llm = ctx.get?.("llm");
-  if (!llm) return null;
-  return async (prompt, { model } = {}) => {
-    // Prefer a simple complete() if present; otherwise try stream() assembly.
-    if (typeof llm.complete === "function") {
-      return llm.complete(prompt, { model });
-    }
-    return null;
-  };
-}
 
 /** Build a sleep summarizer that calls the LLM once per distillation group. */
 function buildSleepSummarizer(callLlm, model) {

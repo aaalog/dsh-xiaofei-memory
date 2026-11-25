@@ -8,6 +8,7 @@ import { coreMemorySignature } from "./src/core-memory.js";
 import { resolveMemoryRef } from "./src/memory-index.js";
 import { isRoleEnabled, roleIdsForAgent } from "./src/roles.js";
 import { claimLease, releaseLease } from "./src/lease.js";
+import { buildLlmCaller, resolveModelRoute } from "./src/llm-call.js";
 import { loadEvolution, runEvolution } from "./src/evolution.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -553,6 +554,52 @@ console.log("== 7o. a retired memory can be looked up and brought back ==");
   check("and it is findable without the archived flag",
     resolveMemoryRef(db, kept.id, { roleIds: [role] })?.id === kept.id);
   check("restoring an unknown id is not an error", restoreMemory(db, "mem_does_not_exist") === false);
+}
+
+console.log("== 7p. the LLM caller speaks the service's actual API ==");
+{
+  // The host `llm` service exposes `stream()`, not `complete()`. The old caller
+  // returned null whenever `complete` was missing, which made every LLM-backed
+  // path silently fall back to the heuristic — distillation included.
+  const chunks = [
+    { type: "block-start", index: 0, blockType: "text" },
+    { type: "text-delta", index: 0, text: "三条记忆" },
+    { type: "text-delta", index: 0, text: "压缩成一句要点" },
+    { type: "finish", reason: { kind: "stop" } },
+  ];
+  const seen = [];
+  const llm = {
+    async listProviders() { return [{ id: "prov-a" }, { id: "prov-b" }]; },
+    async listModels(provider) { return provider === "prov-b" ? [{ id: "wanted-model" }] : [{ id: "other" }]; },
+    stream(options) {
+      seen.push(options);
+      return (async function* () { for (const c of chunks) yield c; })();
+    },
+  };
+  const route = await resolveModelRoute(llm, "wanted-model");
+  check("the route is resolved to the provider that advertises the model",
+    route?.provider === "prov-b" && route?.model === "wanted-model", JSON.stringify(route));
+
+  const caller = buildLlmCaller({ get: (name) => (name === "llm" ? llm : undefined) });
+  const answer = await caller("把这几条压缩成一句", { model: "wanted-model" });
+  check("the stream is assembled into one string", answer === "三条记忆压缩成一句要点", JSON.stringify(answer));
+  check("the call names provider and model", seen[0]?.provider === "prov-b" && seen[0]?.model === "wanted-model",
+    JSON.stringify({ provider: seen[0]?.provider, model: seen[0]?.model }));
+  check("the prompt travels as a user message",
+    seen[0]?.messages?.[0]?.role === "user" && seen[0]?.messages?.[0]?.content?.[0]?.text === "把这几条压缩成一句");
+
+  check("no llm service means no caller", buildLlmCaller({ get: () => undefined }) === null);
+
+  const broken = { async listProviders() { return ["p"]; }, async listModels() { return []; }, stream() { throw new Error("boom"); } };
+  const brokenAnswer = await buildLlmCaller({ get: () => broken })("x", { model: "m" });
+  check("a throwing stream degrades to null", brokenAnswer === null, String(brokenAnswer));
+
+  const errorFinish = {
+    async listProviders() { return ["p"]; },
+    stream() { return (async function* () { yield { type: "finish", reason: { kind: "error" } }; })(); },
+  };
+  check("an error finish degrades to null",
+    (await buildLlmCaller({ get: () => errorFinish })("x", { model: "m" })) === null);
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");

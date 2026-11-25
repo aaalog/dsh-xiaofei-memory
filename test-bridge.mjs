@@ -80,7 +80,14 @@ function request({ method = "POST", body, headers = {} } = {}) {
 }
 
 const noToken = await request({ body: { op: "stats" } });
-check("POST without token is forbidden", noToken.status === 403, `status=${noToken.status}`);
+// 401 rather than 403: the request carried no credential at all.
+check("POST without token is unauthorized", noToken.status === 401, `status=${noToken.status}`);
+
+// A valid token alone must be enough: that is the credential the panel injects,
+// and asking the cookie gate first rejected every client that had the token but
+// no browser session.
+const tokenOnly = await request({ body: { op: "stats" }, headers: { "x-dshxf-token": token } });
+check("a valid token authorizes without a session", tokenOnly.status === 200, `status=${tokenOnly.status}`);
 
 const health = await request({ method: "GET" });
 check("GET health check", health.status === 200 && JSON.parse(health.payload).ok === true);
