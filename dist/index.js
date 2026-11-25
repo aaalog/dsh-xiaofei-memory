@@ -901,6 +901,26 @@ function roleIdsForAgent(roles, agent, fallbackRoleId) {
   return [roleId, "global"];
 }
 
+// src/lease.js
+function claimLease(db, key, ttlMs) {
+  try {
+    return withTransaction(db, () => {
+      const held = Number(metaGet(db, key)) || 0;
+      if (held > 0 && Date.now() - held < Math.max(0, Number(ttlMs) || 0)) return false;
+      metaSet(db, key, String(Date.now()));
+      return true;
+    });
+  } catch {
+    return true;
+  }
+}
+function releaseLease(db, key) {
+  try {
+    withTransaction(db, () => metaSet(db, key, "0"));
+  } catch {
+  }
+}
+
 // src/capture.js
 var IMPORTANCE_CORE_RE = /(记住|永远|务必|重要|核心|关键|红线|必须|一定|教训|原则|准则|决定)/;
 var IMPORTANCE_WEEKLY_RE = /(计划|项目|目标|方案|架构|设计|开发|部署|长期|后续|接下来|打算)/;
@@ -1282,11 +1302,56 @@ function shortMemoryId(id) {
   if (lastUnderscore > 0 && s.length - lastUnderscore - 1 >= 4) return s.slice(lastUnderscore + 1);
   return s;
 }
+var CHAT_OPENERS = [
+  "\u90A3\u597D",
+  "\u597D\u554A",
+  "\u597D\u7684",
+  "\u597D\uFF0C",
+  "\u597D!",
+  "\u597D\uFF01",
+  "\u884C\uFF0C",
+  "\u55EF",
+  "\u54E6",
+  "\u5BF9\uFF0C",
+  "\u5BF9\u7684",
+  "\u6240\u4EE5",
+  "\u5C31\u662F",
+  "\u4F46\u662F",
+  "\u7136\u540E",
+  "\u8FD9\u4E2A",
+  "\u90A3\u4E2A",
+  "\u7EE7\u7EED",
+  "\u53EF\u4EE5",
+  "\u662F\u7684",
+  "\u4E0D\u662F",
+  "\u8FD9\u6B21",
+  "\u521A\u624D",
+  "\u4E0A\u9762",
+  "\u4E0B\u9762",
+  "\u6211\u4EEC",
+  "\u4F60\u5148",
+  "\u4F60\u5148",
+  "\u4F60\u7EE7\u7EED",
+  "ok",
+  "OK",
+  "Ok"
+];
+function isCatalogueWorthy(text, minChars) {
+  const raw = String(text ?? "").trim();
+  if (Array.from(raw).length < minChars) return false;
+  const letters = (raw.match(/[\p{L}\p{N}]/gu) ?? []).length;
+  if (letters < minChars * 0.5) return false;
+  if (/^[A-Za-z]:[\\/]/.test(raw) || /^\/[^\s]/.test(raw)) return false;
+  const head = raw.slice(0, 4);
+  return !CHAT_OPENERS.some((opener) => head.startsWith(opener));
+}
 function buildMemoryIndex(db, {
   roleIds = ["global"],
   excludeIds = [],
   maxTokens = 200,
-  titleChars = 26,
+  titleChars = 20,
+  /** Rows shorter than this name no topic, so they are not worth a line. */
+  minChars = 12,
   limit = 40,
   layers = ["core", "weekly"]
 } = {}) {
@@ -1302,7 +1367,9 @@ function buildMemoryIndex(db, {
        WHERE status = 'active'
          AND role_id IN (${rolePh})
          AND layer IN (${layerPh})
-       ORDER BY strength DESC, created_at DESC, id ASC
+       ORDER BY pinned DESC,
+                CASE layer WHEN 'core' THEN 0 WHEN 'weekly' THEN 1 ELSE 2 END,
+                created_at DESC, id ASC
        LIMIT ?`
     ).all(...roles, ...layerList, Math.max(1, Math.min(200, Number(limit) || 40)));
   } catch {
@@ -1318,6 +1385,7 @@ function buildMemoryIndex(db, {
     const raw = typeof r.content === "string" ? r.content.trim() : "";
     if (!raw) continue;
     if (raw.includes("<memory-recall>")) continue;
+    if (!isCatalogueWorthy(raw, Math.max(4, Number(minChars) || 12))) continue;
     const line = `- [${r.layer}] ${shortMemoryId(r.id)} ${shorten(raw, cap)}`;
     const cost = tokenEstimate(line);
     if (cost <= 0) continue;
@@ -1627,10 +1695,12 @@ function recordSleepRun(db, stats) {
       count: Number(d?.count) || 0
     })) : []
   };
-  const log = readSleepLog(db);
-  log.unshift(entry);
   try {
-    metaSet(db, SLEEP_LOG_KEY, JSON.stringify(log.slice(0, SLEEP_LOG_MAX)));
+    withTransaction(db, () => {
+      const log = readSleepLog(db);
+      log.unshift(entry);
+      metaSet(db, SLEEP_LOG_KEY, JSON.stringify(log.slice(0, SLEEP_LOG_MAX)));
+    });
   } catch {
   }
   return entry;
@@ -1847,7 +1917,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125024559" : "dev";
+var BUILD_STAMP = true ? "20261125025202" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -1869,11 +1939,13 @@ function bumpRecallStats(db, delta = {}) {
   const addCorrections = Math.max(0, Number(delta.corrections) || 0);
   if (addCount === 0 && addCorrections === 0) return;
   try {
-    const current = readRecallStats(db);
-    metaSet(db, RECALL_STATS_KEY, JSON.stringify({
-      count: current.count + addCount,
-      corrections: current.corrections + addCorrections
-    }));
+    withTransaction(db, () => {
+      const current = readRecallStats(db);
+      metaSet(db, RECALL_STATS_KEY, JSON.stringify({
+        count: current.count + addCount,
+        corrections: current.corrections + addCorrections
+      }));
+    });
   } catch {
   }
 }
@@ -2024,11 +2096,20 @@ async function apply(ctx, config) {
     }, next.getTime() - now2);
     if (typeof sleepTimer?.unref === "function") sleepTimer.unref();
   };
+  const SLEEP_LEASE_KEY = "meta.sleepLease";
+  const SLEEP_LEASE_MS = 6 * 60 * 60 * 1e3;
+  const claimSleepLease = () => claimLease(db, SLEEP_LEASE_KEY, SLEEP_LEASE_MS);
+  const releaseSleepLease = () => releaseLease(db, SLEEP_LEASE_KEY);
   const doSleep = async () => {
+    if (!claimSleepLease()) {
+      logger?.info?.("dsh-xiaofei-memory: nightly sleep already claimed by another process; skipping");
+      return;
+    }
     try {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
       const stats = await runNightlySleep(db, { summarize, logger });
       recordSleepRun(db, stats);
+      releaseSleepLease();
       const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,

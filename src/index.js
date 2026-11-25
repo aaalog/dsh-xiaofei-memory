@@ -7,9 +7,10 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 
-import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed } from "./db.js";
+import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
 import { isRoleEnabled, roleIdsForAgent } from "./roles.js";
+import { claimLease, releaseLease } from "./lease.js";
 import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
@@ -125,11 +126,16 @@ function bumpRecallStats(db, delta = {}) {
   const addCorrections = Math.max(0, Number(delta.corrections) || 0);
   if (addCount === 0 && addCorrections === 0) return;
   try {
-    const current = readRecallStats(db);
-    metaSet(db, RECALL_STATS_KEY, JSON.stringify({
-      count: current.count + addCount,
-      corrections: current.corrections + addCorrections,
-    }));
+    // Read-modify-write on a meta row. Synchronous SQLite makes that safe inside
+    // one process, but two DSH windows would read the same value and one
+    // increment would vanish.
+    withTransaction(db, () => {
+      const current = readRecallStats(db);
+      metaSet(db, RECALL_STATS_KEY, JSON.stringify({
+        count: current.count + addCount,
+        corrections: current.corrections + addCorrections,
+      }));
+    });
   } catch { /* counters are advisory; never break the turn */ }
 }
 
@@ -320,7 +326,25 @@ export async function apply(ctx, config) {
     if (typeof sleepTimer?.unref === "function") sleepTimer.unref();
   };
 
+  /**
+   * Claim the nightly pass so two processes cannot run it at once.
+   *
+   * The leases are recorded in `meta` and the claim itself is one transaction:
+   * a review measured two processes running a full sleep plus VACUUM 1.19
+   * seconds apart, which contends for the write lock for no benefit and
+   * double-counts the log.
+   */
+  const SLEEP_LEASE_KEY = "meta.sleepLease";
+  const SLEEP_LEASE_MS = 6 * 60 * 60 * 1000;
+  const claimSleepLease = () => claimLease(db, SLEEP_LEASE_KEY, SLEEP_LEASE_MS);
+  const releaseSleepLease = () => releaseLease(db, SLEEP_LEASE_KEY);
+
   const doSleep = async () => {
+    // Manual triggers bypass the lease: the owner asked for this pass now.
+    if (!claimSleepLease()) {
+      logger?.info?.("dsh-xiaofei-memory: nightly sleep already claimed by another process; skipping");
+      return;
+    }
     try {
       const summarize = config.useLlmExtraction
         ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel)
@@ -328,6 +352,7 @@ export async function apply(ctx, config) {
       const stats = await runNightlySleep(db, { summarize, logger });
       // The scheduled pass runs unattended; without this it leaves no trace.
       recordSleepRun(db, stats);
+      releaseSleepLease();
       const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,

@@ -113,6 +113,31 @@ db.prepare("UPDATE memories SET status='archived' WHERE id=?").run(target);
 check("archived id no longer resolves", resolveMemoryRef(db, target) === null);
 check("archived id not in catalogue", !buildMemoryIndex(db, { roleIds: ["global"], maxTokens: 400, limit: 50 }).some((e) => e.id === target));
 
+// --- catalogue quality -------------------------------------------------
+// The catalogue is how a memory outside the always-on block becomes findable
+// without a search. Its budget fits a handful of lines, so a chat fragment in it
+// costs a topic.
+{
+  const role = "catalogue-role";
+  const fragment = addMemory(db, {
+    roleId: role, layer: "weekly",
+    content: "那好，你先开始重新设计这个app默认所有数据接口都存在后台",
+  }).id;
+  const rule = addMemory(db, {
+    roleId: role, layer: "weekly",
+    content: "公共数据的查询必须带 imgsrc LIKE http% 条件，否则会命中历史脏数据",
+  }).id;
+  const tiny = addMemory(db, { roleId: role, layer: "weekly", content: "好的" }).id;
+
+  const cat = buildMemoryIndex(db, { roleIds: [role], maxTokens: 600, limit: 50 });
+  const ids = cat.map((e) => e.id);
+  check("a chat fragment is kept out of the catalogue", !ids.includes(fragment), JSON.stringify(ids.slice(0, 4)));
+  check("a real rule is catalogued", ids.includes(rule));
+  check("a two-character acknowledgement is not catalogued", !ids.includes(tiny));
+  // Excluded from the catalogue, still readable: the guard is about display.
+  check("the fragment is still readable on demand", resolveMemoryRef(db, fragment.slice(-6)) !== null);
+}
+
 closeMemoryDb(db);
 rmSync(dir, { recursive: true, force: true });
 console.log("\nRESULT: " + pass + " passed, " + fail + " failed");

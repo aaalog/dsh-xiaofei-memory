@@ -42,11 +42,45 @@ export function shortMemoryId(id) {
 }
 
 /**
+ * Openers that mark a captured sentence as conversation rather than knowledge.
+ *
+ * The catalogue is the only path by which a memory that is not in the always-on
+ * block becomes discoverable without a search, and its budget fits a handful of
+ * lines. Spending them on "那好，你先开始重新设计这个app" is worse than spending
+ * them on nothing: the model reads a catalogue of topics, and a chat fragment
+ * names no topic. These rows stay fully recallable — they are only kept out of
+ * the catalogue.
+ */
+const CHAT_OPENERS = [
+  "那好", "好啊", "好的", "好，", "好!", "好！", "行，", "嗯", "哦", "对，", "对的",
+  "所以", "就是", "但是", "然后", "这个", "那个", "继续", "可以", "是的", "不是",
+  "这次", "刚才", "上面", "下面", "我们", "你先", "你先", "你继续", "ok", "OK", "Ok",
+];
+
+/** A row worth spending a catalogue line on. */
+function isCatalogueWorthy(text, minChars) {
+  const raw = String(text ?? "").trim();
+  if (Array.from(raw).length < minChars) return false;
+  // Must carry at least a little prose: titles made of digits and punctuation
+  // name nothing.
+  const letters = (raw.match(/[\p{L}\p{N}]/gu) ?? []).length;
+  if (letters < minChars * 0.5) return false;
+  // A bare path names a file, not a topic. The live catalogue had
+  // "C:\\Users\\Administrator\\Doubao\\chats\\2026-11-21..." taking a line.
+  if (/^[A-Za-z]:[\\/]/.test(raw) || /^\/[^\s]/.test(raw)) return false;
+  const head = raw.slice(0, 4);
+  return !CHAT_OPENERS.some((opener) => head.startsWith(opener));
+}
+
+/**
  * Build the catalogue of memories that are not already shown in full.
  *
- * Ordering matches the full block (strength, recency, id) so the same state
- * always produces the same catalogue — a changing catalogue would invalidate
- * the prompt prefix on every request for no benefit.
+ * Ordering is `pinned, layer, recency, id`: identity first, then the more
+ * durable layers, then newest. It used to be `strength, recency`, which ranked
+ * whatever had been merged most often at the top — in practice the chat
+ * fragments that get captured repeatedly — and spent the whole budget on them.
+ * The id tiebreak keeps the catalogue total, so identical state renders
+ * identically and the prompt prefix stays valid.
  *
  * @returns {Array<{id:string, short:string, layer:string, title:string, chars:number}>}
  */
@@ -54,7 +88,9 @@ export function buildMemoryIndex(db, {
   roleIds = ["global"],
   excludeIds = [],
   maxTokens = 200,
-  titleChars = 26,
+  titleChars = 20,
+  /** Rows shorter than this name no topic, so they are not worth a line. */
+  minChars = 12,
   limit = 40,
   layers = ["core", "weekly"],
 } = {}) {
@@ -71,7 +107,9 @@ export function buildMemoryIndex(db, {
        WHERE status = 'active'
          AND role_id IN (${rolePh})
          AND layer IN (${layerPh})
-       ORDER BY strength DESC, created_at DESC, id ASC
+       ORDER BY pinned DESC,
+                CASE layer WHEN 'core' THEN 0 WHEN 'weekly' THEN 1 ELSE 2 END,
+                created_at DESC, id ASC
        LIMIT ?`
     ).all(...roles, ...layerList, Math.max(1, Math.min(200, Number(limit) || 40)));
   } catch {
@@ -90,6 +128,7 @@ export function buildMemoryIndex(db, {
     if (!raw) continue;
     // Same guard as the full block: never surface our own injected wrapper.
     if (raw.includes("<memory-recall>")) continue;
+    if (!isCatalogueWorthy(raw, Math.max(4, Number(minChars) || 12))) continue;
 
     const line = `- [${r.layer}] ${shortMemoryId(r.id)} ${shorten(raw, cap)}`;
     const cost = tokenEstimate(line);

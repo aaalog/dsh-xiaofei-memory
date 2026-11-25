@@ -1,7 +1,7 @@
 // lib/console.js — Management console data operations for dsh-xiaofei-memory.
 // Host-half helpers backing the Web console: stats, search, nightly sleep.
 
-import { searchMemories, metaGet, metaSet } from "./db.js";
+import { searchMemories, metaGet, metaSet, withTransaction } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
 import { runNightlySleep } from "./sleep.js";
 import { loadEvolution } from "./evolution.js";
@@ -64,10 +64,14 @@ export function recordSleepRun(db, stats) {
         }))
       : [],
   };
-  const log = readSleepLog(db);
-  log.unshift(entry);
   try {
-    metaSet(db, SLEEP_LOG_KEY, JSON.stringify(log.slice(0, SLEEP_LOG_MAX)));
+    // One transaction for the read-modify-write: two processes finishing a pass
+    // at the same moment would otherwise each write the log they read.
+    withTransaction(db, () => {
+      const log = readSleepLog(db);
+      log.unshift(entry);
+      metaSet(db, SLEEP_LOG_KEY, JSON.stringify(log.slice(0, SLEEP_LOG_MAX)));
+    });
   } catch { /* a failed log write must never fail the pass */ }
   return entry;
 }

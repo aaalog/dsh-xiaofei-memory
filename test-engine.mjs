@@ -7,6 +7,7 @@ import { runNightlySleep } from "./src/sleep.js";
 import { coreMemorySignature } from "./src/core-memory.js";
 import { resolveMemoryRef } from "./src/memory-index.js";
 import { isRoleEnabled, roleIdsForAgent } from "./src/roles.js";
+import { claimLease, releaseLease } from "./src/lease.js";
 import { loadEvolution, runEvolution } from "./src/evolution.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -470,6 +471,19 @@ console.log("== 7l. the identity row cannot be lost ==");
   const survived = reopened.prepare("SELECT COUNT(*) n FROM memories WHERE id='mem_soul_digest'").get().n;
   check("purge does not delete the digest", survived === 1, `n=${survived}`);
   closeMemoryDb(reopened);
+}
+
+console.log("== 7m. the nightly pass runs once across processes ==");
+{
+  const key = "test.lease";
+  check("first claim wins", claimLease(db, key, 60_000) === true);
+  check("a second claim while held is refused", claimLease(db, key, 60_000) === false);
+  releaseLease(db, key);
+  check("after release the next claim wins", claimLease(db, key, 60_000) === true);
+  // An expired claim must not wedge the pass forever.
+  metaSet(db, key, String(Date.now() - 120_000));
+  check("an expired claim can be taken", claimLease(db, key, 60_000) === true);
+  releaseLease(db, key);
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");
