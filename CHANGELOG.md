@@ -1,7 +1,120 @@
 # Changelog
 
 All notable changes to `dsh-xiaofei-memory` are recorded here.
-Versioning follows semantic versioning; the plugin targets DSH `0.2.1-rc`.
+Versioning follows semantic versioning; the plugin targets DSH `0.2.2-rc.3`.
+
+## 0.3.0 — 2026-11-25
+
+Twenty-five commits and roughly 9,900 added lines since 0.2.0. The theme is
+trust: the memory that survives a restart unchanged, cannot be lost to a wrong
+similarity score, and can be read back when it is retired.
+
+### Breaking changes
+
+Read these before upgrading; the first is the one that changes what the model
+sees on every turn.
+
+- **The always-on block is identity only.** Selection is `pinned = 1` rather
+  than "strongest core rows". Capture can no longer produce `core` at all (a
+  `记住/必须` hint reaches `weekly`), and captured facts are written at strength
+  0.8 instead of the 1.0 that made them instantly eligible. `coreMemoryPinnedOnly:
+  false` restores the old selection.
+- **The ten seed memories are unpinned.** They remain active, unchanged and
+  retrievable; one derived row, `mem_soul_digest`, represents them in the block.
+  The unpinning runs once behind `meta.seedPinnedMigrated`.
+- **Distillation archives only what it summarised** (at most eight rows per
+  group). The remainder stays in the layer for the next night instead of being
+  archived and purged unread.
+- **A differing key token no longer retires a row.** Filenames, URLs and numbers
+  are compared: a difference means a *different fact*, so the rows coexist. The
+  previous release retired the older row, which ate parallel facts and numbered
+  series.
+- **Retired memories are kept for seven days** (`archiveRetentionDays`) before
+  the nightly pass deletes them. Rows archived by an earlier build are stamped
+  during migration, so they get the same window.
+- **Existing rows longer than 400 characters are not rewritten.** The cap applies
+  to new writes only; trimming historical rows is a deliberate manual step.
+
+### Added
+
+- **Always-on core memory** as a `systemPrompt` section (`memory:core`, order
+  10150, `interpolate: false`), with a selection order that is total so identical
+  store state renders identical text and the prompt prefix stays cacheable.
+- **Derived soul digest**: one row distilled from the ten seeds, refreshed only
+  when missing, so owner edits are never reverted.
+- **Progressive disclosure**: a catalogue section listing memories that did not
+  fit, plus `memory_core_read` to pull one back on demand.
+- **`memory_core_restore`**, so retiring a memory is reversible from the tools
+  rather than only from a SQL prompt; `memory_core_read` now says "archived,
+  replaced by X" instead of "not found".
+- **Nightly-sleep history** in `meta.sleepLog` (last 30 runs) with the scan size,
+  threshold, distilled groups and their sizes, and whether a summariser existed.
+  Rendered in the console with the same pager as every other list.
+- **Memory-sea View**: a dependency-free canvas starfield on a first-class
+  Conversation View tab, positioned by the same entity links retrieval uses.
+- **Console rework**: lists are rows rather than cards, capped at 12 per page and
+  sized to the window, with numbered pages; one spacing and type scale; the View
+  takes the whole column instead of leaving the composer docked underneath.
+- **`archiveRetentionDays`** (default 7) and the `superseded_by` / `archived_at`
+  columns that make a retirement auditable.
+- **`enableSleepSummarizer`**: the nightly summariser no longer requires
+  `useLlmExtraction`, which also sends every captured turn through the model.
+  Distillation needs one call per group at 03:00, not a per-turn cost.
+- **Cross-process lease** so the nightly pass runs once even when two windows are
+  open; taken by both the scheduled and the manual path, released in `finally`.
+- **Credential redaction** on write: assigned passwords, one-time verification
+  codes and `Authorization: Bearer …` values become `***`, in the body and in the
+  entity column.
+- **Role policy** (`src/roles.js`): `roles[].enabled` is enforced for capture,
+  retrieval, the always-on block and both tools; an agent reads its own namespace
+  plus `global`, and `memory_core_read` refuses a cross-role id.
+- **Entity confidence** now means something: 1.0 when the entity appears in the
+  text, 0.6 when it was inferred, so `graphExpand`'s 0.8 threshold finally filters.
+
+### Changed
+
+- **Retrieval scores the question, not the paste.** Coverage is measured against
+  the intent — the last line, or the window ending at the last question mark —
+  so a log pasted above the question no longer dilutes it. Politeness prefixes
+  are stripped; spaces are deliberately not clause boundaries.
+- **Candidate selection** is neutral (by id) with a cap of 4000 and damped
+  strength (`strength^0.5`), replacing orderings by strength and by length that
+  each dropped the answer once enough rows shared the query's words.
+- **FTS trigger** is scoped `OF content, role_id, layer`; a read no longer rewrites
+  the index (measured 4.03× → 1.00×).
+- **Merges** keep the new text when lengths are equal, raise `pinned` with
+  `MAX(pinned, ?)`, and never absorb a value that only differs in a key token.
+- **Catalogue ordering** is `pinned, layer, recency, id`, and shapes that name no
+  topic (chat openers, bare paths, very short rows) are kept out of it while
+  staying readable on demand.
+- **`busy_timeout = 5000`** and `withTransaction` around every compound write,
+  joining a caller's transaction with a savepoint instead of a nested `BEGIN`.
+
+### Fixed
+
+- **Cross-role distillation**: a group mixed two roles' memories, wrote the
+  summary into one and purged the other's originals. Groups are keyed by
+  `(role_id, entity)`.
+- **Capture leaks**: schedule reminders, the elapsed-time trailer, runtime
+  snapshots, our own `<memory-recall>` wrapper, and background-job completion
+  notices were all stored as memories.
+- **The digest could be deleted**: it matched neither the seed pattern nor the
+  purge exclusion, so archiving it emptied the always-on block until a restart.
+- **Duplicate rows** outside the recent-20 window: an exact-content lookup now
+  runs before the similarity scan.
+- **Silent truncation** of over-long writes, and silent reverts of the soul
+  digest, are both gone.
+- Console: `injectCss` never applied a new stylesheet when one already existed;
+  the sleep tab read a field the host never sends; `window.__ctx__` published the
+  whole host context to the page.
+- Tool contracts: every output field is declared, and `memory_core_add_fact` goes
+  through the service method so a `core` fact is actually pinned.
+
+### Notes
+
+- Verified across four external review rounds; the review reports live in
+  `reports/`.
+- 364 assertions over 11 suites.
 
 ## 0.2.0 — 2026-11-04
 

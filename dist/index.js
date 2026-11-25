@@ -1989,6 +1989,14 @@ var Config = z.object({
   extractionModel: z.string().default("deepseek-chat").volatile(),
   /** Whether to use the LLM-backed extractor (default heuristic keeps it dependency-free). */
   useLlmExtraction: z.boolean().default(false),
+  /**
+   * Gate the nightly summariser separately from capture extraction.
+   *
+   * Turning on `useLlmExtraction` also sends every captured turn through the
+   * model. Distillation only needs one call per group at 03:00, so it gets its
+   * own switch: verification and real use do not have to pay the per-turn cost.
+   */
+  enableSleepSummarizer: z.boolean().default(false).volatile(),
   /** Damp factor applied on correction (PRD 4.3). */
   dampFactor: z.number().default(0.85),
   /** Time decay factor (PRD 4.2). */
@@ -2053,7 +2061,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125062038" : "dev";
+var BUILD_STAMP = true ? "20261125071229" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2234,7 +2242,7 @@ async function apply(ctx, config) {
   };
   const doSleep = async () => {
     try {
-      const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
+      const summarize = buildSummarizer(ctx, config);
       const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       recordSleepRun(db, stats);
       const recallStats = readRecallStats(db);
@@ -2315,7 +2323,7 @@ async function apply(ctx, config) {
       return previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens });
     },
     triggerNightlySleep() {
-      const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
+      const summarize = buildSummarizer(ctx, config);
       return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
     },
     listSoulMemories() {
@@ -2411,7 +2419,7 @@ async function apply(ctx, config) {
           pinnedOnly: config.coreMemoryPinnedOnly !== false
         });
       case "sleep": {
-        const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
+        const summarize = buildSummarizer(ctx, config);
         return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       }
       case "souls":
@@ -2719,6 +2727,10 @@ async function apply(ctx, config) {
     }
     closeMemoryDb(db);
   });
+}
+function buildSummarizer(ctx, config) {
+  if (!config.enableSleepSummarizer && !config.useLlmExtraction) return null;
+  return buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel);
 }
 function buildLlmCaller(ctx) {
   const llm = ctx.get?.("llm");

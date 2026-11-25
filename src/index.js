@@ -48,6 +48,14 @@ export const Config = z.object({
   extractionModel: z.string().default("deepseek-chat").volatile(),
   /** Whether to use the LLM-backed extractor (default heuristic keeps it dependency-free). */
   useLlmExtraction: z.boolean().default(false),
+  /**
+   * Gate the nightly summariser separately from capture extraction.
+   *
+   * Turning on `useLlmExtraction` also sends every captured turn through the
+   * model. Distillation only needs one call per group at 03:00, so it gets its
+   * own switch: verification and real use do not have to pay the per-turn cost.
+   */
+  enableSleepSummarizer: z.boolean().default(false).volatile(),
   /** Damp factor applied on correction (PRD 4.3). */
   dampFactor: z.number().default(0.85),
   /** Time decay factor (PRD 4.2). */
@@ -357,9 +365,7 @@ export async function apply(ctx, config) {
   const doSleep = async () => {
     // Manual triggers bypass the lease: the owner asked for this pass now.
     try {
-      const summarize = config.useLlmExtraction
-        ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel)
-        : null;
+      const summarize = buildSummarizer(ctx, config);
       const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       // The scheduled pass runs unattended; without this it leaves no trace.
       recordSleepRun(db, stats);
@@ -450,7 +456,7 @@ export async function apply(ctx, config) {
       return previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens });
     },
     triggerNightlySleep() {
-      const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
+      const summarize = buildSummarizer(ctx, config);
       return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
     },
     listSoulMemories() {
@@ -539,7 +545,7 @@ export async function apply(ctx, config) {
           pinnedOnly: config.coreMemoryPinnedOnly !== false,
         });
       case "sleep": {
-        const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
+        const summarize = buildSummarizer(ctx, config);
         return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       }
       case "souls": return listSoulMemories(db);
@@ -870,6 +876,17 @@ export async function apply(ctx, config) {
 }
 
 /** Build a minimal LLM caller from ctx.llm if present; else null. */
+/**
+ * Build the nightly summariser when either switch asks for one.
+ *
+ * `useLlmExtraction` implies it, keeping the old behaviour; `enableSleepSummarizer`
+ * enables distillation alone.
+ */
+function buildSummarizer(ctx, config) {
+  if (!config.enableSleepSummarizer && !config.useLlmExtraction) return null;
+  return buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel);
+}
+
 function buildLlmCaller(ctx) {
   const llm = ctx.get?.("llm");
   if (!llm) return null;
