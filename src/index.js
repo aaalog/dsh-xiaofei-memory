@@ -26,6 +26,19 @@ export const name = "dsh-xiaofei-memory";
 // stays loadable even when those optional services are absent.
 export const inject = ["tools"];
 
+/**
+ * Retention in milliseconds.
+ *
+ * `Number(x) || 0` turned an invalid setting into "delete immediately", which is
+ * the most destructive interpretation available. Anything unusable falls back to
+ * the documented default instead.
+ */
+function retentionMs(days) {
+  const value = Number(days);
+  const safe = Number.isFinite(value) && value >= 0 ? value : 7;
+  return safe * 24 * 60 * 60 * 1000;
+}
+
 export const Config = z.object({
   /** Master switch: false disables injection, capture, sleep, and tools. */
   enabled: z.boolean().default(true),
@@ -340,25 +353,16 @@ export async function apply(ctx, config) {
    * seconds apart, which contends for the write lock for no benefit and
    * double-counts the log.
    */
-  const SLEEP_LEASE_KEY = "meta.sleepLease";
-  const SLEEP_LEASE_MS = 6 * 60 * 60 * 1000;
-  const claimSleepLease = () => claimLease(db, SLEEP_LEASE_KEY, SLEEP_LEASE_MS);
-  const releaseSleepLease = () => releaseLease(db, SLEEP_LEASE_KEY);
 
   const doSleep = async () => {
     // Manual triggers bypass the lease: the owner asked for this pass now.
-    if (!claimSleepLease()) {
-      logger?.info?.("dsh-xiaofei-memory: nightly sleep already claimed by another process; skipping");
-      return;
-    }
     try {
       const summarize = config.useLlmExtraction
         ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel)
         : null;
-      const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1000 });
+      const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       // The scheduled pass runs unattended; without this it leaves no trace.
       recordSleepRun(db, stats);
-      releaseSleepLease();
       const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
@@ -447,7 +451,7 @@ export async function apply(ctx, config) {
     },
     triggerNightlySleep() {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-      return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1000 });
+      return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
     },
     listSoulMemories() {
       return listSoulMemories(db);
@@ -536,7 +540,7 @@ export async function apply(ctx, config) {
         });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-        return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1000 });
+        return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       }
       case "souls": return listSoulMemories(db);
       case "roles": return liveRoles.map((r) => ({ ...r }));

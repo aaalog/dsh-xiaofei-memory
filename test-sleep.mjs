@@ -1,6 +1,6 @@
 // test-sleep.mjs — nightly sleep: dynamic threshold, entity noise filter, seed safety.
-import { openMemoryDb, closeMemoryDb, addMemory, listLayerMemories } from "./src/db.js";
-import { runNightlySleep, distillThreshold } from "./src/sleep.js";
+import { openMemoryDb, closeMemoryDb, addMemory, listLayerMemories, metaGet, metaSet } from "./src/db.js";
+import { runNightlySleep, distillThreshold, SLEEP_LEASE_KEY } from "./src/sleep.js";
 import { isMeaningfulEntity } from "./src/util.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -196,6 +196,30 @@ console.log("== 3c. distillation archives only what the summariser saw ==");
   const still = db8.prepare("SELECT COUNT(*) n FROM memories WHERE layer='recent' AND status='active' AND id LIKE 'many\_%' ESCAPE '\\'").get().n;
   check("the rest stay in the layer for the next pass", still === 20 - fed, `left=${still} expected=${20 - fed}`);
   closeMemoryDb(db8);
+  try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
+console.log("== 3d. one pass per night, across channels ==");
+{
+  // The scheduled pass and a manual trigger both go through the same lease now:
+  // a click during 03:00 used to run a second sleep+VACUUM.
+  const d = mkdtempSync(join(tmpdir(), "dshxf-lease-"));
+  const dbL = openMemoryDb(join(d, "m.sqlite"));
+
+  const ran = await runNightlySleep(dbL, { lease: true });
+  check("a leased pass runs", ran.skipped === undefined, JSON.stringify(ran.skipped));
+  check("it releases the lease when done", metaGet(dbL, SLEEP_LEASE_KEY) === "0", String(metaGet(dbL, SLEEP_LEASE_KEY)));
+
+  metaSet(dbL, SLEEP_LEASE_KEY, String(Date.now()));
+  const blocked = await runNightlySleep(dbL, { lease: true });
+  check("a held lease makes the next pass stand down", blocked.skipped === "leased", String(blocked.skipped));
+  metaSet(dbL, SLEEP_LEASE_KEY, "0");
+
+  // A throwing summariser must not hold the lease for its six-hour TTL.
+  await runNightlySleep(dbL, { lease: true, summarize: async () => { throw new Error("boom"); } });
+  check("a failing pass still releases the lease", metaGet(dbL, SLEEP_LEASE_KEY) === "0", String(metaGet(dbL, SLEEP_LEASE_KEY)));
+
+  closeMemoryDb(dbL);
   try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 

@@ -507,7 +507,19 @@ function countMemories(db) {
 function addMemory(db, opts) {
   return withTransaction(db, () => addMemoryImpl(db, opts));
 }
-var KEY_TOKEN_RE = /\d{2,}|[A-Za-z_][A-Za-z0-9_.-]*\.[A-Za-z]{2,5}\b|https?:\/\/[^\s]+/g;
+var KEY_TOKEN_RE = new RegExp(
+  [
+    "\\d+(?:\\.\\d+)*",
+    // 1234, 2.3, 3306 - a single digit counts too
+    "\\b[vp]\\d+\\b",
+    // v2, p1
+    "[A-Za-z_][A-Za-z0-9_.-]*\\.[A-Za-z]{2,5}\\b",
+    // rollback.sh, Product.php
+    "https?:\\/\\/[^\\s]+"
+    // urls
+  ].join("|"),
+  "g"
+);
 function keyTokens(text) {
   return new Set((String(text ?? "").match(KEY_TOKEN_RE) ?? []).map((x) => x.toLowerCase()));
 }
@@ -540,7 +552,7 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       const mergedEntities = Array.from(/* @__PURE__ */ new Set([...existing.entities ?? [], ...cleanEntities])).slice(0, 20);
       const mergedStrength = clamp((existing.strength ?? 1) + 0.1, 0.1, 5);
       const mergedOrigin = Array.from(/* @__PURE__ */ new Set([...existing.originIds ?? [], ...originIds])).slice(-20);
-      const mergedContent = text.length > (existing.content?.length ?? 0) ? text : existing.content;
+      const mergedContent = text.length >= (existing.content?.length ?? 0) ? text : existing.content;
       db.prepare(
         // `pinned` only ever rises: a merge must not demote an identity row, and
         // a new pinned fact that collides with an older unpinned row has to
@@ -550,7 +562,8 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
-    if (sim >= 0.75 || sim >= 0.6 && keyDiff) {
+    if (keyDiff) continue;
+    if (sim >= 0.75) {
       if (!isSeedMemoryId(c.id)) archiveMemory(db, c.id, { supersededBy: id });
       break;
     }
@@ -739,12 +752,12 @@ function vacuumAndOptimize(db) {
 }
 var SEED_ID_PATTERN = "mem_0[0-9][0-9]";
 var DEFAULT_ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1e3;
-function purgeArchived(db, { retentionMs = DEFAULT_ARCHIVE_RETENTION_MS } = {}) {
+function purgeArchived(db, { retentionMs: retentionMs2 = DEFAULT_ARCHIVE_RETENTION_MS } = {}) {
   withTransaction(db, () => {
     db.prepare(
       `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
     ).run();
-    const cutoff = now() - Math.max(0, Number(retentionMs) || 0);
+    const cutoff = now() - Math.max(0, Number(retentionMs2) || 0);
     db.prepare(
       "DELETE FROM memories WHERE status <> 'active' AND id <> ? AND (archived_at IS NULL OR archived_at <= ?)"
     ).run(SOUL_DIGEST_ID, cutoff);
@@ -792,12 +805,64 @@ var QUERY_STOP_TERMS = /* @__PURE__ */ new Set([
 function trimQueryText(text) {
   return String(text ?? "").replace(/```[\s\S]*?```/g, " ").slice(-QUERY_TAIL_CHARS);
 }
+var INTENT_PREFIXES = [
+  "\u8BF7\u95EE",
+  "\u8BF7",
+  "\u5E2E\u6211",
+  "\u5E2E\u5FD9",
+  "\u9EBB\u70E6",
+  "\u6211\u60F3\u77E5\u9053",
+  "\u60F3\u95EE",
+  "\u95EE\u4E00\u4E0B",
+  "\u95EE\u95EE",
+  "\u770B\u770B",
+  "\u770B\u4E00\u4E0B",
+  "\u67E5\u4E00\u4E0B",
+  "\u786E\u8BA4\u4E00\u4E0B",
+  "\u6C42\u95EE",
+  "\u6C42\u52A9"
+];
+function stripIntentPrefix(text) {
+  let out = String(text ?? "").trim();
+  for (let guard = 0; guard < 4; guard++) {
+    const hit = INTENT_PREFIXES.map((prefix) => ({ prefix, at: out.lastIndexOf(prefix) })).filter((x) => x.at > 0).sort((a, b) => b.at - a.at)[0];
+    if (!hit) break;
+    const rest = out.slice(hit.at + hit.prefix.length).replace(/^[\s，,、:：]+/u, "").trim();
+    if (Array.from(rest).length < 4) break;
+    out = rest;
+  }
+  for (const prefix of INTENT_PREFIXES) {
+    if (out.startsWith(prefix)) {
+      const rest = out.slice(prefix.length).replace(/^[\s，,、:：]+/u, "").trim();
+      if (Array.from(rest).length >= 4) out = rest;
+      break;
+    }
+  }
+  return out;
+}
 function intentOf(text) {
   const tail = trimQueryText(text);
   const lines = tail.split(/\r?\n+/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length > 1) return lines[lines.length - 1];
+  if (lines.length > 1) return stripIntentPrefix(lines[lines.length - 1]);
   const sentences = tail.split(/(?<=[。！？!?；;])\s*/u).map((s) => s.trim()).filter(Boolean);
-  return sentences.length > 1 ? sentences[sentences.length - 1] : tail;
+  if (sentences.length > 1) return stripIntentPrefix(sentences[sentences.length - 1]);
+  const chars = Array.from(tail);
+  if (chars.length > 120) {
+    const qMark = Math.max(tail.lastIndexOf("\uFF1F"), tail.lastIndexOf("?"));
+    if (qMark > 0) {
+      let start = Math.max(0, qMark - 120);
+      for (const boundary of ["\uFF0C", "\u3002", "\uFF1B", ",", ";", "|", "/", "	", "\n"]) {
+        const at = tail.lastIndexOf(boundary, qMark);
+        if (at >= start) start = at + 1;
+      }
+      const window = tail.slice(start, qMark + 1).trim();
+      if (window) return stripIntentPrefix(window);
+    }
+    const clauses = tail.split(/[，。；,;]/u).map((s) => s.trim()).filter(Boolean);
+    if (clauses.length > 1) return stripIntentPrefix(clauses[clauses.length - 1]);
+    return stripIntentPrefix(chars.slice(-120).join(""));
+  }
+  return stripIntentPrefix(tail);
 }
 function tokenizeQuery(text) {
   const tail = trimQueryText(text).slice(-QUERY_TAIL_CHARS);
@@ -1176,7 +1241,16 @@ function distillThreshold(size) {
   const scaled = Math.ceil(size * DISTILL_RATIO);
   return Math.min(DISTILL_MAX_THRESHOLD, Math.max(DISTILL_MIN_THRESHOLD, scaled || DISTILL_MIN_THRESHOLD));
 }
-async function runNightlySleep(db, { summarize, layer = "recent", logger, archiveRetentionMs } = {}) {
+var SLEEP_LEASE_KEY = "meta.sleepLease";
+var SLEEP_LEASE_MS = 6 * 60 * 60 * 1e3;
+async function runNightlySleep(db, {
+  summarize,
+  layer = "recent",
+  logger,
+  archiveRetentionMs,
+  /** Take the cross-process lease for this pass. */
+  lease = false
+} = {}) {
   const stats = {
     distilledGroups: 0,
     distilledMemories: 0,
@@ -1188,95 +1262,106 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger, archiv
     skippedGroups: 0,
     details: []
   };
-  const groups = /* @__PURE__ */ new Map();
-  const all = listLayerMemories(db, layer);
-  stats.scanned = all.length;
-  const threshold = distillThreshold(all.length);
-  stats.threshold = threshold;
-  const canDistill = typeof summarize === "function";
-  stats.distillSkipped = canDistill ? null : "no-summarizer";
-  if (!canDistill) {
+  if (lease && !claimLease(db, SLEEP_LEASE_KEY, SLEEP_LEASE_MS)) {
+    logger?.info?.("dsh-xiaofei-memory: nightly sleep already claimed by another process; skipping");
+    return { ...stats, skipped: "leased" };
+  }
+  try {
+    return await runPass(stats);
+  } finally {
+    if (lease) releaseLease(db, SLEEP_LEASE_KEY);
+  }
+  async function runPass(stats2) {
+    const groups = /* @__PURE__ */ new Map();
+    const all = listLayerMemories(db, layer);
+    stats2.scanned = all.length;
+    const threshold = distillThreshold(all.length);
+    stats2.threshold = threshold;
+    const canDistill = typeof summarize === "function";
+    stats2.distillSkipped = canDistill ? null : "no-summarizer";
+    if (!canDistill) {
+      purgeArchived(db, archiveRetentionMs === void 0 ? {} : { retentionMs: archiveRetentionMs });
+      vacuumAndOptimize(db);
+      stats2.vacuumed = true;
+      logger?.info?.("dsh-xiaofei-memory: nightly sleep: distillation skipped (no summarizer), vacuum done");
+      return stats2;
+    }
+    for (const m of all) {
+      const roleId = m.role_id ?? "global";
+      for (const e of m.entities ?? []) {
+        if (!isMeaningfulEntity(e)) continue;
+        const key = roleId + "\0" + e;
+        if (!groups.has(key)) groups.set(key, { roleId, entity: e, memories: [] });
+        const g = groups.get(key);
+        if (g.memories.length <= 40) g.memories.push(m);
+      }
+    }
+    const archivedIds = /* @__PURE__ */ new Set();
+    for (const { roleId, entity, memories } of groups.values()) {
+      const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values()).filter((m) => !archivedIds.has(m.id));
+      if (unique.length <= threshold) {
+        stats2.skippedEntities++;
+        continue;
+      }
+      if (unique.some((m) => (m.role_id ?? "global") !== roleId)) {
+        stats2.skippedEntities++;
+        continue;
+      }
+      const summarised = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0)).slice(0, 8);
+      const ids = summarised.map((m) => m.id);
+      const texts = summarised.map((m) => m.content);
+      let summary = null;
+      if (typeof summarize === "function") {
+        try {
+          summary = await summarize(texts);
+        } catch {
+        }
+      }
+      const content = typeof summary === "string" ? normalizeContent(summary) : "";
+      if (!content) {
+        stats2.skippedGroups++;
+        logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
+        continue;
+      }
+      const res = withTransaction(db, () => {
+        const written = addMemory(db, {
+          roleId,
+          layer: "core",
+          content,
+          entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
+          originIds: ids,
+          strength: 1,
+          // The summary must be its own row: merging it into a row from `ids` used
+          // to hand back that id, which the archive loop then archived and purged.
+          noMerge: true
+        });
+        for (const id of ids) {
+          if (isSeedMemoryId(id) || id === written?.id) continue;
+          archiveMemory(db, id);
+          archivedIds.add(id);
+          stats2.archived++;
+        }
+        return written;
+      });
+      stats2.distilledGroups++;
+      stats2.distilledMemories += ids.length;
+      stats2.details.push({
+        roleId,
+        entity,
+        count: ids.length,
+        summary: content.slice(0, SUMMARY_MAX_CHARS),
+        newId: res?.id ?? null,
+        merged: res?.merged ?? false
+      });
+      logger?.info?.(
+        `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
+      );
+    }
     purgeArchived(db, archiveRetentionMs === void 0 ? {} : { retentionMs: archiveRetentionMs });
     vacuumAndOptimize(db);
-    stats.vacuumed = true;
-    logger?.info?.("dsh-xiaofei-memory: nightly sleep: distillation skipped (no summarizer), vacuum done");
-    return stats;
+    stats2.vacuumed = true;
+    return stats2;
   }
-  for (const m of all) {
-    const roleId = m.role_id ?? "global";
-    for (const e of m.entities ?? []) {
-      if (!isMeaningfulEntity(e)) continue;
-      const key = roleId + "\0" + e;
-      if (!groups.has(key)) groups.set(key, { roleId, entity: e, memories: [] });
-      const g = groups.get(key);
-      if (g.memories.length <= 40) g.memories.push(m);
-    }
-  }
-  const archivedIds = /* @__PURE__ */ new Set();
-  for (const { roleId, entity, memories } of groups.values()) {
-    const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values()).filter((m) => !archivedIds.has(m.id));
-    if (unique.length <= threshold) {
-      stats.skippedEntities++;
-      continue;
-    }
-    if (unique.some((m) => (m.role_id ?? "global") !== roleId)) {
-      stats.skippedEntities++;
-      continue;
-    }
-    const summarised = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0)).slice(0, 8);
-    const ids = summarised.map((m) => m.id);
-    const texts = summarised.map((m) => m.content);
-    let summary = null;
-    if (typeof summarize === "function") {
-      try {
-        summary = await summarize(texts);
-      } catch {
-      }
-    }
-    const content = typeof summary === "string" ? normalizeContent(summary) : "";
-    if (!content) {
-      stats.skippedGroups++;
-      logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
-      continue;
-    }
-    const res = withTransaction(db, () => {
-      const written = addMemory(db, {
-        roleId,
-        layer: "core",
-        content,
-        entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
-        originIds: ids,
-        strength: 1,
-        // The summary must be its own row: merging it into a row from `ids` used
-        // to hand back that id, which the archive loop then archived and purged.
-        noMerge: true
-      });
-      for (const id of ids) {
-        if (isSeedMemoryId(id) || id === written?.id) continue;
-        archiveMemory(db, id);
-        archivedIds.add(id);
-        stats.archived++;
-      }
-      return written;
-    });
-    stats.distilledGroups++;
-    stats.distilledMemories += ids.length;
-    stats.details.push({
-      roleId,
-      entity,
-      count: ids.length,
-      summary: content.slice(0, SUMMARY_MAX_CHARS),
-      newId: res?.id ?? null,
-      merged: res?.merged ?? false
-    });
-    logger?.info?.(
-      `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
-    );
-  }
-  purgeArchived(db, archiveRetentionMs === void 0 ? {} : { retentionMs: archiveRetentionMs });
-  vacuumAndOptimize(db);
-  stats.vacuumed = true;
-  return stats;
 }
 
 // src/evolution.js
@@ -1781,8 +1866,8 @@ function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
     weight: loadEvolution(db).retrievalWeight
   });
 }
-async function triggerNightlySleep(db, { summarize, logger, archiveRetentionMs } = {}) {
-  const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs });
+async function triggerNightlySleep(db, { summarize, logger, archiveRetentionMs, lease = true } = {}) {
+  const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs, lease });
   recordSleepRun(db, stats);
   metaSet(db, "meta.lastManualSleep", Date.now());
   return stats;
@@ -1879,6 +1964,11 @@ function listSoulMemories(db) {
 // src/index.js
 var name = "dsh-xiaofei-memory";
 var inject = ["tools"];
+function retentionMs(days) {
+  const value = Number(days);
+  const safe = Number.isFinite(value) && value >= 0 ? value : 7;
+  return safe * 24 * 60 * 60 * 1e3;
+}
 var Config = z.object({
   /** Master switch: false disables injection, capture, sleep, and tools. */
   enabled: z.boolean().default(true),
@@ -1952,7 +2042,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125025635" : "dev";
+var BUILD_STAMP = true ? "20261125061830" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2131,20 +2221,11 @@ async function apply(ctx, config) {
     }, next.getTime() - now2);
     if (typeof sleepTimer?.unref === "function") sleepTimer.unref();
   };
-  const SLEEP_LEASE_KEY = "meta.sleepLease";
-  const SLEEP_LEASE_MS = 6 * 60 * 60 * 1e3;
-  const claimSleepLease = () => claimLease(db, SLEEP_LEASE_KEY, SLEEP_LEASE_MS);
-  const releaseSleepLease = () => releaseLease(db, SLEEP_LEASE_KEY);
   const doSleep = async () => {
-    if (!claimSleepLease()) {
-      logger?.info?.("dsh-xiaofei-memory: nightly sleep already claimed by another process; skipping");
-      return;
-    }
     try {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-      const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1e3 });
+      const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       recordSleepRun(db, stats);
-      releaseSleepLease();
       const recallStats = readRecallStats(db);
       const evolved = runEvolution(db, {
         recallCount: recallStats.count,
@@ -2224,7 +2305,7 @@ async function apply(ctx, config) {
     },
     triggerNightlySleep() {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-      return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1e3 });
+      return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
     },
     listSoulMemories() {
       return listSoulMemories(db);
@@ -2320,7 +2401,7 @@ async function apply(ctx, config) {
         });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-        return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1e3 });
+        return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       }
       case "souls":
         return listSoulMemories(db);

@@ -430,6 +430,13 @@ console.log("== 7j. intent extraction: the question under a paste ==");
   check("the paste scores the answer like the bare question",
     Math.abs(bareSim - pastedSim) < 0.01, `${bareSim.toFixed(3)} vs ${pastedSim.toFixed(3)}`);
 
+  // Same line: copy a log and append the question without pressing Enter. The
+  // intent is the window ending at the last question mark, with the politeness
+  // prefix cut, because a window cut from a paste still carries its tail.
+  const oneLine = lines.join(" ") + " 请问 " + ask;
+  const single = searchMemories(db, oneLine, [role], { limit: 5, minSim: 0.3 });
+  check("a single-line paste still recalls the trailing question", single.some((h) => h.id === target), `hits=${single.length}`);
+
   // The other direction: an unrelated question must stay empty.
   const unrelated = searchMemories(db, "今天晚饭吃什么", [role], { limit: 5, minSim: 0.3 });
   check("an unrelated question still returns nothing", unrelated.length === 0, `hits=${unrelated.length}`);
@@ -492,22 +499,35 @@ console.log("== 7m. the nightly pass runs once across processes ==");
   releaseLease(db, key);
 }
 
-console.log("== 7n. a changed key token supersedes at a lower similarity ==");
+console.log("== 7n. a changed key token means a different fact, not a correction ==");
 {
-  // "Product.php" vs "Search.php" scores 0.72 — under the conflict threshold —
-  // so the two contradictory rules used to coexist. A differing filename,
-  // number or URL is a different fact, and must retire the older row.
-  const role = "supersede-role";
-  const older = addMemory(db, { roleId: role, layer: "weekly", content: "Spdiam 的加价规则在 Product.php 里" });
-  const newer = addMemory(db, { roleId: role, layer: "weekly", content: "Spdiam 的加价规则在 Search.php 里" });
-  const retired = db.prepare("SELECT status, superseded_by, archived_at FROM memories WHERE id = ?").get(older.id);
-  check("a changed key token retires the older row", retired?.status === "archived", JSON.stringify(retired));
-  check("the retired row names its replacement", retired?.superseded_by === newer.id, `${retired?.superseded_by} vs ${newer.id}`);
-  check("the retirement is timestamped", Number(retired?.archived_at) > 0, String(retired?.archived_at));
-  check("the newer fact stays active", db.prepare("SELECT status FROM memories WHERE id=?").get(newer.id)?.status === "active");
+  // "订单 1234" and "订单 5678" score 0.615. An earlier rule retired the first
+  // one because the numbers differed, so a numbered series collapsed to a single
+  // row. A differing key token now only prevents a merge; the rows coexist.
+  const role = "parallel-role";
+  const first = addMemory(db, { roleId: role, layer: "weekly", content: "订单 1234 的退款已经到账，客户已确认" });
+  const second = addMemory(db, { roleId: role, layer: "weekly", content: "订单 5678 的退款已经到账，客户已确认" });
+  const active = (id) => db.prepare("SELECT status FROM memories WHERE id=?").get(id)?.status === "active";
+  check("parallel facts both stay active", active(first.id) && active(second.id),
+    `${first.id}:${active(first.id)} ${second.id}:${active(second.id)}`);
 
-  // A short generic fact has no key token of its own; a detailed follow-up must
-  // merge into it, not replace it.
+  for (let i = 0; i < 12; i++) {
+    addMemory(db, { roleId: role, layer: "weekly", content: `系列笔记 要点${i}：这是第${i}条独立结论` });
+  }
+  const series = db.prepare("SELECT COUNT(*) n FROM memories WHERE role_id=? AND status='active' AND content LIKE '系列笔记 %'").get(role).n;
+  check("a numbered series is not eaten row by row", series === 12, `active=${series}/12`);
+
+  // A single digit is a key token too: "版本 2.3" -> "版本 3.3" used to merge and
+  // silently keep 2.3.
+  const rule = "，发布前必须跑完全部用例再合并，这条规则请一直记住";
+  addMemory(db, { roleId: role, layer: "recent", content: "本次发布的目标版本是 2.3" + rule });
+  const updated = addMemory(db, { roleId: role, layer: "recent", content: "本次发布的目标版本是 3.3" + rule });
+  check("a changed single digit is not merged away", updated.merged === false, JSON.stringify(updated));
+  const versions = db.prepare("SELECT content FROM memories WHERE role_id=? AND status='active' AND content LIKE '%目标版本是%'").all(role)
+    .map((r) => (r.content.match(/版本是 ([0-9.]+)/) ?? [])[1]);
+  check("the new value is stored", versions.includes("3.3"), JSON.stringify(versions));
+
+  // A short generic fact has no key token: a detailed follow-up still merges.
   const generic = addMemory(db, { roleId: role, layer: "weekly", content: "部署完成" });
   const detailed = addMemory(db, { roleId: role, layer: "weekly", content: "部署完成：回滚脚本放在 rollback.sh" });
   check("a keyless short fact still merges with detail", detailed.merged === true && detailed.id === generic.id, JSON.stringify(detailed));

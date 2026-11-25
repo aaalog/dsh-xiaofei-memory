@@ -336,7 +336,15 @@ export function addMemory(db, opts) {
  * The parts of a fact that decide what it is about: file names, URLs and any
  * number long enough to be an identifier rather than a quantity.
  */
-const KEY_TOKEN_RE = /\d{2,}|[A-Za-z_][A-Za-z0-9_.-]*\.[A-Za-z]{2,5}\b|https?:\/\/[^\s]+/g;
+const KEY_TOKEN_RE = new RegExp(
+  [
+    "\\d+(?:\\.\\d+)*",                       // 1234, 2.3, 3306 - a single digit counts too
+    "\\b[vp]\\d+\\b",                          // v2, p1
+    "[A-Za-z_][A-Za-z0-9_.-]*\\.[A-Za-z]{2,5}\\b", // rollback.sh, Product.php
+    "https?:\\/\\/[^\\s]+",                    // urls
+  ].join("|"),
+  "g",
+);
 
 function keyTokens(text) {
   return new Set((String(text ?? "").match(KEY_TOKEN_RE) ?? []).map((x) => x.toLowerCase()));
@@ -404,7 +412,10 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       // so a longer new fact that merely quoted an existing short one vanished
       // without a trace (similarity is containment-based, so a 9-char row can
       // "match" a 300-char fact at 1.0).
-      const mergedContent = text.length > (existing.content?.length ?? 0) ? text : existing.content;
+      // Equal length keeps the NEW text: with `>` the old value silently won an
+      // update that only changed a number or a word, which is how "版本 2.3"
+      // survived a write of "版本 3.3".
+      const mergedContent = text.length >= (existing.content?.length ?? 0) ? text : existing.content;
       db.prepare(
         // `pinned` only ever rises: a merge must not demote an identity row, and
         // a new pinned fact that collides with an older unpinned row has to
@@ -414,7 +425,19 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
-    if (sim >= 0.75 || (sim >= 0.6 && keyDiff)) {
+    // DIFFERENT KEY TOKENS MEANS DIFFERENT FACTS, NOT A CORRECTION.
+    //
+    // "订单 1234 的退款已经到账" and "订单 5678 的退款已经到账" score 0.615, and
+    // an earlier version of this rule retired the first one because the numbers
+    // differed - so a numbered series collapsed to a single row and a parallel
+    // fact disappeared. Nothing here can tell a correction from a sibling
+    // without knowing the subject: both look like "same sentence, different
+    // value". Retiring on a guess loses data, so a key-token difference only
+    // stops the merge above (which would have silently kept the old value) and
+    // the rows coexist.
+    if (keyDiff) continue;
+
+    if (sim >= 0.75) {
       // Conflicting fact: retire the older, write the new one. Seeded soul
       // memories are exempt: they are identity, not facts to be superseded, and
       // archiving them would let nightly purge destroy them for good.
@@ -839,12 +862,72 @@ function trimQueryText(text) {
  * non-empty line is that question in every real example seen; for a
  * single-line message the last sentence is used when the text contains several.
  */
+/** Politeness that carries no topic, stripped from the front of the ask. */
+const INTENT_PREFIXES = [
+  "请问", "请", "帮我", "帮忙", "麻烦", "我想知道", "想问", "问一下", "问问",
+  "看看", "看一下", "查一下", "确认一下", "求问", "求助",
+];
+
+function stripIntentPrefix(text) {
+  let out = String(text ?? "").trim();
+  // A window cut from a paste still carries its tail ("42 handler=Spdiam… 请问
+  // Spdiam 价格配置 评审怎么改？"), so the politeness marker is often in the
+  // MIDDLE. Cut at its last occurrence, then repeat in case another follows.
+  for (let guard = 0; guard < 4; guard++) {
+    const hit = INTENT_PREFIXES
+      .map((prefix) => ({ prefix, at: out.lastIndexOf(prefix) }))
+      .filter((x) => x.at > 0)
+      .sort((a, b) => b.at - a.at)[0];
+    if (!hit) break;
+    const rest = out.slice(hit.at + hit.prefix.length).replace(/^[\s，,、:：]+/u, "").trim();
+    if (Array.from(rest).length < 4) break;
+    out = rest;
+  }
+  for (const prefix of INTENT_PREFIXES) {
+    if (out.startsWith(prefix)) {
+      const rest = out.slice(prefix.length).replace(/^[\s，,、:：]+/u, "").trim();
+      // Keep the original when stripping would leave nothing meaningful.
+      if (Array.from(rest).length >= 4) out = rest;
+      break;
+    }
+  }
+  return out;
+}
+
 function intentOf(text) {
   const tail = trimQueryText(text);
   const lines = tail.split(/\r?\n+/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length > 1) return lines[lines.length - 1];
+  if (lines.length > 1) return stripIntentPrefix(lines[lines.length - 1]);
+
   const sentences = tail.split(/(?<=[。！？!?；;])\s*/u).map((s) => s.trim()).filter(Boolean);
-  return sentences.length > 1 ? sentences[sentences.length - 1] : tail;
+  if (sentences.length > 1) return stripIntentPrefix(sentences[sentences.length - 1]);
+
+  // One long line with the question appended — the shape produced by copying a
+  // log and typing the question after it without pressing Enter. Sentence
+  // splitting cannot help because such payloads carry no sentence punctuation,
+  // so take the window that ends at the LAST question mark.
+  const chars = Array.from(tail);
+  if (chars.length > 120) {
+    const qMark = Math.max(tail.lastIndexOf("？"), tail.lastIndexOf("?"));
+    if (qMark > 0) {
+      let start = Math.max(0, qMark - 120);
+      // Spaces are NOT boundaries: they separate the words inside the question
+      // itself, and treating one as the start cut "Spdiam 价格配置 评审怎么改？"
+      // down to "评审怎么改？".
+      for (const boundary of ["，", "。", "；", ",", ";", "|", "/", "\t", "\n"]) {
+        const at = tail.lastIndexOf(boundary, qMark);
+        if (at >= start) start = at + 1;
+      }
+      const window = tail.slice(start, qMark + 1).trim();
+      if (window) return stripIntentPrefix(window);
+    }
+    // No question mark: the last clause is still a better guess than the paste;
+    // with no clause boundary either, the tail of the line is all there is.
+    const clauses = tail.split(/[，。；,;]/u).map((s) => s.trim()).filter(Boolean);
+    if (clauses.length > 1) return stripIntentPrefix(clauses[clauses.length - 1]);
+    return stripIntentPrefix(chars.slice(-120).join(""));
+  }
+  return stripIntentPrefix(tail);
 }
 
 /** Split a query into search terms, ranked by evidence rather than position. */

@@ -3,6 +3,7 @@
 // archive the originals, then VACUUM + FTS optimize to reclaim space.
 
 import { addMemory, listLayerMemories, archiveMemory, vacuumAndOptimize, purgeArchived, isSeedMemoryId, withTransaction } from "./db.js";
+import { claimLease, releaseLease } from "./lease.js";
 import { normalizeContent, extractEntities, tokenEstimate, isMeaningfulEntity } from "./util.js";
 
 // A fixed threshold of 10 never fires: real stores hold a handful of memories
@@ -27,11 +28,34 @@ export function distillThreshold(size) {
  * `summarize` is an optional async (texts[]) => string | null LLM hook;
  * falls back to a deterministic heuristic when absent.
  */
-export async function runNightlySleep(db, { summarize, layer = "recent", logger, archiveRetentionMs } = {}) {
+export const SLEEP_LEASE_KEY = "meta.sleepLease";
+const SLEEP_LEASE_MS = 6 * 60 * 60 * 1000;
+
+export async function runNightlySleep(db, {
+  summarize, layer = "recent", logger, archiveRetentionMs,
+  /** Take the cross-process lease for this pass. */
+  lease = false,
+} = {}) {
   const stats = {
     distilledGroups: 0, distilledMemories: 0, archived: 0, vacuumed: false,
     threshold: 0, scanned: 0, skippedEntities: 0, skippedGroups: 0, details: [],
   };
+
+  // One pass per night, whichever channel asked for it. A manual run used to
+  // bypass the lease, so a click during the 03:00 pass ran both.
+  if (lease && !claimLease(db, SLEEP_LEASE_KEY, SLEEP_LEASE_MS)) {
+    logger?.info?.("dsh-xiaofei-memory: nightly sleep already claimed by another process; skipping");
+    return { ...stats, skipped: "leased" };
+  }
+  try {
+    return await runPass(stats);
+  } finally {
+    // Released even when the pass throws: a lease held for its full six hours
+    // would suppress the next night's run.
+    if (lease) releaseLease(db, SLEEP_LEASE_KEY);
+  }
+
+  async function runPass(stats) {
 
   // Group recent memories by (role, shared entity), ignoring noise entities.
   //
@@ -158,6 +182,7 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger,
   vacuumAndOptimize(db);
   stats.vacuumed = true;
   return stats;
+  }
 }
 
 export { DISTILL_MIN_THRESHOLD, DISTILL_RATIO, DISTILL_MAX_THRESHOLD, SUMMARY_MAX_CHARS };
