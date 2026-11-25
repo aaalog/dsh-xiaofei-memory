@@ -179,8 +179,17 @@ function migrateData(db) {
  * delete the row; the next open recreates it.
  */
 function ensureSoulDigest(db) {
-  const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
-  if (row) return;
+  const row = db.prepare("SELECT id, status, pinned, layer FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
+  if (row) {
+    // A digest that was archived for any reason must come back. Otherwise the
+    // always-on block is simply empty until purge deletes the row and the next
+    // start recreates it - an identity gap that can last a whole day, because
+    // `purgeArchived` only revives the `mem_0NN` seeds.
+    if (row.status !== "active" || row.pinned !== 1 || row.layer !== "core") {
+      db.prepare("UPDATE memories SET status = 'active', pinned = 1, layer = 'core' WHERE id = ?").run(SOUL_DIGEST_ID);
+    }
+    return;
+  }
 
   db.prepare(
     "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
@@ -347,8 +356,11 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       // "match" a 300-char fact at 1.0).
       const mergedContent = text.length > (existing.content?.length ?? 0) ? text : existing.content;
       db.prepare(
-        "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
-      ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
+        // `pinned` only ever rises: a merge must not demote an identity row, and
+        // a new pinned fact that collides with an older unpinned row has to
+        // become pinned rather than silently stay out of the always-on block.
+        "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ?, pinned = MAX(pinned, ?) WHERE id = ?"
+      ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), pinned ? 1 : 0, c.id);
       replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
@@ -460,15 +472,17 @@ export function touchAccessed(db, id) {
 /**
  * Upper bound on how many candidates are fetched and scored for one query.
  *
- * The cap itself is a necessary cost control on a large store, but the ORDER BY
- * that chose which candidates survive used to be `strength DESC`: a query made
- * of common words matched thousands of strong rows and the single weak row that
- * actually answered it never reached scoring. Ranking is now relevance-first, so
- * the cut must not be made on strength — long rows go last because they cost the
- * most to score and a distilled fact is short. The real fix for large stores is
- * a bigram inverted index instead of a LIKE scan.
+ * Every ordering tried so far loses the answer at some scale, because none of
+ * them knows anything about relevance before scoring: `strength DESC` kept the
+ * popular rows and dropped the weak one that answered the query, and
+ * `length ASC` kept the short chat fragments and dropped the long answer - the
+ * exact case a review measured at 1500 and 2000 matching rows. The order is
+ * neutral now (by id) and the cap sits high enough that a realistic store scores
+ * every candidate; 4000 rows of coverage scoring measured at a few tens of
+ * milliseconds on a 10k store. The real fix for larger stores is a bm25-ranked
+ * pre-selection or a bigram inverted index, not a different static key.
  */
-const MAX_SCORED_CANDIDATES = 1500;
+const MAX_SCORED_CANDIDATES = 4000;
 
 /**
  * Exponent applied to `strength` in the ranking score. Strength grows without
@@ -563,7 +577,7 @@ export function searchMemories(db, query, roleIds, {
     const idPlaceholders = Array.from(candidateIds).map(() => "?").join(",");
     rows = db.prepare(
       `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})
-       ORDER BY length(m.content) ASC, m.id ASC LIMIT ?`
+       ORDER BY m.id ASC LIMIT ?`
     ).all(...Array.from(candidateIds), MAX_SCORED_CANDIDATES);
   }
 
@@ -707,7 +721,10 @@ export function purgeArchived(db) {
     db.prepare(
       `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
     ).run();
-    db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+    // The derived identity row is not a seed, so the resurrection above does not
+    // cover it: without this, archiving it once meant purge deleted it and the
+    // always-on block stayed empty until the next process start.
+    db.prepare("DELETE FROM memories WHERE status <> 'active' AND id <> ?").run(SOUL_DIGEST_ID);
   });
 }
 

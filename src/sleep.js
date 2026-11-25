@@ -85,13 +85,17 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
     // Defence in depth: the key already scopes the group to one role, but a row
     // whose role_id changed mid-pass would still poison the summary.
     if (unique.some((m) => (m.role_id ?? "global") !== roleId)) { stats.skippedEntities++; continue; }
-    const ids = unique.map((m) => m.id);
-    // Build a distilled summary into core, then archive the originals.
-    const texts = unique
+    // Summarise and archive the SAME slice. The summariser is fed at most eight
+    // rows, so archiving the whole group deleted twelve rows per group whose
+    // text never reached the summary - "eight in, twenty out". The remainder
+    // stays in the layer and comes back next night, which makes distillation
+    // progressive instead of lossy.
+    const summarised = unique
       .slice()
       .sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0))
-      .slice(0, 8)
-      .map((m) => m.content);
+      .slice(0, 8);
+    const ids = summarised.map((m) => m.id);
+    const texts = summarised.map((m) => m.content);
     let summary = null;
     if (typeof summarize === "function") {
       try { summary = await summarize(texts); } catch { /* skip this group */ }

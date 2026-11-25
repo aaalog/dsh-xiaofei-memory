@@ -1,5 +1,5 @@
 // test-engine.mjs — verify dsh-xiaofei-memory engine modules against PRD acceptance.
-import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet, getMemory } from "./src/db.js";
+import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet, getMemory, purgeArchived } from "./src/db.js";
 import { retrieveForPrompt } from "./src/retrieval.js";
 import { CaptureTracker } from "./src/capture.js";
 import { FeedbackManager } from "./src/feedback.js";
@@ -426,6 +426,50 @@ console.log("== 7j. intent extraction: the question under a paste ==");
   // The other direction: an unrelated question must stay empty.
   const unrelated = searchMemories(db, "今天晚饭吃什么", [role], { limit: 5, minSim: 0.3 });
   check("an unrelated question still returns nothing", unrelated.length === 0, `hits=${unrelated.length}`);
+}
+
+console.log("== 7k. identity writes reach the block, at any candidate scale ==");
+{
+  // Merge must not demote: an unpinned row that collides with a pinned fact has
+  // to become pinned, otherwise the model's explicit identity write is lost.
+  const base = addMemory(db, { roleId: "pin-role", layer: "core", content: "这是一条先写入的普通核心记录", entities: [] });
+  check("plain core write stays unpinned", db.prepare("SELECT pinned FROM memories WHERE id=?").get(base.id)?.pinned === 0);
+  const same = addMemory(db, { roleId: "pin-role", layer: "core", content: "这是一条先写入的普通核心记录", entities: [], pinned: true });
+  check("a pinned write that merges promotes the row",
+    same.merged === true && db.prepare("SELECT pinned FROM memories WHERE id=?").get(same.id)?.pinned === 1,
+    JSON.stringify(same));
+
+  // Candidate pre-selection must not lose the answer when many rows share the
+  // query's words: the previous orderings kept either the strong or the short
+  // noise and dropped the row that answered.
+  const role = "cap-role";
+  const ins = db.prepare(
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status) VALUES (?, ?, 'recent', ?, '[]', 1.0, ?, 'active')"
+  );
+  // Noise matches one half of the query; the answer matches both, so it has to
+  // rank above 1600 rows that are otherwise identical to it.
+  for (let i = 0; i < 1600; i++) ins.run(`cap_${i}`, role, `共同词 噪声条目 ${i}`, Date.now() - i);
+  const answerId = addMemory(db, {
+    roleId: role, layer: "weekly",
+    content: "共同词 的正确答案在这里：结论是先核对数据再改配置。" + "这是一条比较长的复盘记录，".repeat(12),
+  }).id;
+  const hits = searchMemories(db, "共同词 核对数据", [role], { limit: 5, minSim: 0 });
+  check("the answer survives 1600 same-word candidates", hits.some((h) => h.id === answerId), `hits=${hits.length}`);
+}
+
+console.log("== 7l. the identity row cannot be lost ==");
+{
+  db.prepare("UPDATE memories SET status='archived' WHERE id='mem_soul_digest'").run();
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  const reopened = openMemoryDb(dbPath);
+  const revived = reopened.prepare("SELECT status, pinned, layer FROM memories WHERE id='mem_soul_digest'").get();
+  check("an archived digest is revived on open",
+    revived?.status === "active" && revived?.pinned === 1 && revived?.layer === "core", JSON.stringify(revived));
+  reopened.prepare("UPDATE memories SET status='archived' WHERE id='mem_soul_digest'").run();
+  purgeArchived(reopened);
+  const survived = reopened.prepare("SELECT COUNT(*) n FROM memories WHERE id='mem_soul_digest'").get().n;
+  check("purge does not delete the digest", survived === 1, `n=${survived}`);
+  closeMemoryDb(reopened);
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");

@@ -373,8 +373,13 @@ export async function apply(ctx, config) {
       // A fact written explicitly at the core layer is identity by intent, so it
       // is pinned and therefore eligible for the always-on block. Everything
       // else stays unpinned and is reachable only through retrieval.
+      const target = roleId ?? config.roleId;
+      // A disabled namespace stops accepting writes here too; without this the
+      // tool was the one path that could still fill a role the owner switched
+      // off.
+      if (!isRoleEnabled(liveRoles, target)) return null;
       return addMemory(db, {
-        roleId: roleId ?? config.roleId,
+        roleId: target,
         layer,
         content,
         entities,
@@ -668,13 +673,25 @@ export async function apply(ctx, config) {
           : "写入失败。",
       }],
     },
-    async execute(args) {
-      const res = addMemory(db, {
-        roleId: args?.roleId ?? config.roleId,
+    async execute(args, exec) {
+      // Through the service method, not addMemory: this is what carries the
+      // "core means pinned" rule, so a fact the model records as identity
+      // actually reaches the always-on block. Writing straight to addMemory
+      // stored it unpinned, where the block never showed it.
+      const own = exec?.agent?.session?.header?.roleId;
+      const requested = String(args?.roleId ?? "").trim();
+      // An agent may address its own namespace or the shared one; asking for a
+      // different role silently wrote across the boundary.
+      const roleId = requested && (requested === own || requested === "global" || own === undefined)
+        ? requested
+        : (own ?? config.roleId);
+      const res = core.addFact({
+        roleId,
         layer: args?.layer ?? "recent",
         content: args?.content,
         entities: Array.isArray(args?.entities) ? args.entities : [],
       });
+      if (!res) return { ok: false };
       return { ok: true, id: res?.id, merged: res?.merged ?? false };
     },
   });

@@ -170,6 +170,35 @@ console.log("== 3b. distillation must stay inside one role ==");
   try { rmSync(xDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
+console.log("== 3c. distillation archives only what the summariser saw ==");
+{
+  // "Eight in, twenty out": the summariser was fed at most eight rows while the
+  // whole group was archived and then purged, so twelve rows per group were
+  // deleted without ever contributing to the summary.
+  const d = mkdtempSync(join(tmpdir(), "dshxf-8in-"));
+  const db8 = openMemoryDb(join(d, "m.sqlite"));
+  const ins = db8.prepare(
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status) VALUES (?, 'global', 'recent', ?, ?, 1.0, ?, 'active')"
+  );
+  const insEnt = db8.prepare("INSERT OR IGNORE INTO entity_index (entity, memory_id, confidence) VALUES (?, ?, 1.0)");
+  for (let i = 0; i < 20; i++) {
+    const id = `many_${i}`;
+    ins.run(id, `关于同一个主题的第${i}条独立记录，内容互不相同以便不被合并处理。`, JSON.stringify(["共同主题"]), Date.now() - i * 1000);
+    insEnt.run("共同主题", id);
+  }
+  let fed = 0;
+  const stats = await runNightlySleep(db8, {
+    summarize: async (texts) => { fed = texts.length; return "二十条合并后的要点摘要"; },
+  });
+  check("summariser receives at most 8 rows", fed <= 8, `fed=${fed}`);
+  check("archived count equals what was summarised", stats.archived === fed, `archived=${stats.archived} fed=${fed}`);
+  // Count only this fixture's rows: the seeds live in `recent` too.
+  const still = db8.prepare("SELECT COUNT(*) n FROM memories WHERE layer='recent' AND status='active' AND id LIKE 'many\_%' ESCAPE '\\'").get().n;
+  check("the rest stay in the layer for the next pass", still === 20 - fed, `left=${still} expected=${20 - fed}`);
+  closeMemoryDb(db8);
+  try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
 console.log("== 4. seed safety ==");
 const seeds = db.prepare("SELECT count(*) c FROM memories WHERE id GLOB 'mem_0[0-9][0-9]'").get().c;
 check("10 seeds intact after distillation", seeds === 10, "seeds=" + seeds);

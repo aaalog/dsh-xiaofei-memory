@@ -393,8 +393,13 @@ function migrateData(db) {
   ensureSoulDigest(db);
 }
 function ensureSoulDigest(db) {
-  const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
-  if (row) return;
+  const row = db.prepare("SELECT id, status, pinned, layer FROM memories WHERE id = ?").get(SOUL_DIGEST_ID);
+  if (row) {
+    if (row.status !== "active" || row.pinned !== 1 || row.layer !== "core") {
+      db.prepare("UPDATE memories SET status = 'active', pinned = 1, layer = 'core' WHERE id = ?").run(SOUL_DIGEST_ID);
+    }
+    return;
+  }
   db.prepare(
     "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status, pinned) VALUES (?, ?, 'core', ?, ?, 5.0, ?, 'active', 1)"
   ).run(
@@ -511,8 +516,11 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       const mergedOrigin = Array.from(/* @__PURE__ */ new Set([...existing.originIds ?? [], ...originIds])).slice(-20);
       const mergedContent = text.length > (existing.content?.length ?? 0) ? text : existing.content;
       db.prepare(
-        "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ? WHERE id = ?"
-      ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), c.id);
+        // `pinned` only ever rises: a merge must not demote an identity row, and
+        // a new pinned fact that collides with an older unpinned row has to
+        // become pinned rather than silently stay out of the always-on block.
+        "UPDATE memories SET content = ?, strength = ?, entities = ?, origin_ids = ?, last_accessed = ?, pinned = MAX(pinned, ?) WHERE id = ?"
+      ).run(mergedContent, mergedStrength, toJsonList(mergedEntities), toJsonList(mergedOrigin), now(), pinned ? 1 : 0, c.id);
       replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
@@ -585,7 +593,7 @@ function archiveMemory(db, id) {
 function touchAccessed(db, id) {
   db.prepare("UPDATE memories SET last_accessed = ? WHERE id = ?").run(now(), id);
 }
-var MAX_SCORED_CANDIDATES = 1500;
+var MAX_SCORED_CANDIDATES = 4e3;
 var STRENGTH_EXPONENT = 0.5;
 function searchMemories(db, query, roleIds, {
   decay = 0.01,
@@ -636,7 +644,7 @@ function searchMemories(db, query, roleIds, {
     const idPlaceholders = Array.from(candidateIds).map(() => "?").join(",");
     rows = db.prepare(
       `SELECT m.* FROM memories m WHERE m.id IN (${idPlaceholders})
-       ORDER BY length(m.content) ASC, m.id ASC LIMIT ?`
+       ORDER BY m.id ASC LIMIT ?`
     ).all(...Array.from(candidateIds), MAX_SCORED_CANDIDATES);
   }
   const w = clamp(Number(weight) || 0, 0, 1);
@@ -710,7 +718,7 @@ function purgeArchived(db) {
     db.prepare(
       `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
     ).run();
-    db.prepare("DELETE FROM memories WHERE status <> 'active'").run();
+    db.prepare("DELETE FROM memories WHERE status <> 'active' AND id <> ?").run(SOUL_DIGEST_ID);
   });
 }
 function isSeedMemoryId(id) {
@@ -1166,8 +1174,9 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
       stats.skippedEntities++;
       continue;
     }
-    const ids = unique.map((m) => m.id);
-    const texts = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0)).slice(0, 8).map((m) => m.content);
+    const summarised = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0)).slice(0, 8);
+    const ids = summarised.map((m) => m.id);
+    const texts = summarised.map((m) => m.content);
     let summary = null;
     if (typeof summarize === "function") {
       try {
@@ -1838,7 +1847,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125014737" : "dev";
+var BUILD_STAMP = true ? "20261125024559" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2061,8 +2070,10 @@ async function apply(ctx, config) {
       });
     },
     addFact({ content, roleId, layer = "recent", entities = [] }) {
+      const target = roleId ?? config.roleId;
+      if (!isRoleEnabled(liveRoles, target)) return null;
       return addMemory(db, {
-        roleId: roleId ?? config.roleId,
+        roleId: target,
         layer,
         content,
         entities,
@@ -2371,13 +2382,17 @@ async function apply(ctx, config) {
         text: v?.ok ? `\u5DF2\u5199\u5165\uFF08${v?.id?.slice(-6) ?? ""}\uFF09${v?.merged ? "\uFF0C\u5DF2\u5408\u5E76\u5230\u5DF2\u6709\u6761\u76EE" : ""}\u3002` : "\u5199\u5165\u5931\u8D25\u3002"
       }]
     },
-    async execute(args) {
-      const res = addMemory(db, {
-        roleId: args?.roleId ?? config.roleId,
+    async execute(args, exec) {
+      const own = exec?.agent?.session?.header?.roleId;
+      const requested = String(args?.roleId ?? "").trim();
+      const roleId = requested && (requested === own || requested === "global" || own === void 0) ? requested : own ?? config.roleId;
+      const res = core.addFact({
+        roleId,
         layer: args?.layer ?? "recent",
         content: args?.content,
         entities: Array.isArray(args?.entities) ? args.entities : []
       });
+      if (!res) return { ok: false };
       return { ok: true, id: res?.id, merged: res?.merged ?? false };
     }
   });
