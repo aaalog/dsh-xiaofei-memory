@@ -532,6 +532,25 @@ export function setStrength(db, id, value) {
 }
 
 /** Archive a memory (soft delete). */
+/**
+ * Bring a retired memory back into the live set.
+ *
+ * Retiring a row is reversible only if something can undo it. The retention
+ * window keeps the data, and this is the operation that uses it: it clears the
+ * retirement markers so the row reads as live again. Returns false when the row
+ * does not exist.
+ */
+export function restoreMemory(db, id) {
+  return withTransaction(db, () => {
+    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(id);
+    if (!row) return false;
+    db.prepare(
+      "UPDATE memories SET status = 'active', archived_at = NULL, superseded_by = NULL WHERE id = ?"
+    ).run(id);
+    return true;
+  });
+}
+
 export function archiveMemory(db, id, { supersededBy = null } = {}) {
   db.prepare(
     "UPDATE memories SET status = 'archived', archived_at = ?, superseded_by = COALESCE(?, superseded_by) WHERE id = ?"

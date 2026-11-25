@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 
-import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction } from "./db.js";
+import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction, restoreMemory } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
 import { isRoleEnabled, roleIdsForAgent } from "./roles.js";
 import { claimLease, releaseLease } from "./lease.js";
@@ -757,21 +757,38 @@ export async function apply(ctx, config) {
           roleId: { type: "string" },
           strength: { type: "number" },
           content: { type: "string" },
+          archived: { type: "boolean" },
+          supersededBy: { type: "string" },
+          preview: { type: "string" },
         },
       },
       render: (_args, v) => [{
         type: "text",
         text: v?.ok
           ? `[${v.layer} · ${v.roleId} · s=${Number(v.strength).toFixed(2)}] ${v.content}`
-          : "未找到该记忆（可能已归档或 id 有歧义）。",
+          : v?.archived
+            ? `该记忆已归档${v.supersededBy ? `（被 ${v.supersededBy} 取代）` : ""}，可调用 memory_core_restore 恢复：${v.preview ?? ""}`
+            : "未找到该记忆（可能已归档或 id 有歧义）。",
       }],
     },
     async execute(args, exec) {
       // Knowing a short id used to be enough to read any role's memory.
-      const row = resolveMemoryRef(db, args?.id, {
-        roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId),
-      });
-      if (!row) return { ok: false };
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const row = resolveMemoryRef(db, args?.id, { roleIds });
+      if (!row) {
+        // Not active: say so and offer the way back instead of a dead end.
+        const retired = resolveMemoryRef(db, args?.id, { roleIds, includeArchived: true });
+        if (retired && retired.status !== "active") {
+          return {
+            ok: false,
+            archived: true,
+            id: String(retired.id),
+            supersededBy: retired.superseded_by ? String(retired.superseded_by) : undefined,
+            preview: String(retired.content ?? "").slice(0, 120),
+          };
+        }
+        return { ok: false };
+      }
       return {
         ok: true,
         id: String(row.id),
@@ -783,11 +800,66 @@ export async function apply(ctx, config) {
     },
   });
 
+  const disposeRestore = ctx.tools.register({
+    name: "memory_core_restore",
+    description: "恢复一条在保留期内被归档（取代）的长期记忆。归档超过保留期的记忆无法恢复。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "记忆 id 或索引里的短 id。" },
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          reason: { type: "string" },
+          content: { type: "string" },
+        },
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok
+          ? `已恢复（${String(v.id).slice(-6)}）：${String(v.content ?? "").slice(0, 120)}`
+          : v?.reason === "already-active"
+            ? "该记忆本来就是活跃状态，无需恢复。"
+            : v?.reason === "expired"
+              ? "该记忆的保留期已过，无法恢复。"
+              : "未找到该记忆。",
+      }],
+    },
+    async execute(args, exec) {
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const row = resolveMemoryRef(db, args?.id, { roleIds, includeArchived: true });
+      if (!row) return { ok: false, reason: "not-found" };
+      if (row.status === "active") return { ok: true, id: String(row.id), reason: "already-active", content: String(row.content ?? "") };
+
+      // Only inside the retention window: past it the row was either deleted
+      // already or is about to be, and "restoring" it would promise something
+      // the next nightly pass takes back.
+      const window = retentionMs(config.archiveRetentionDays);
+      const retiredAt = Number(row.archived_at) || 0;
+      if (retiredAt > 0 && Date.now() - retiredAt > window) {
+        return { ok: false, reason: "expired", id: String(row.id) };
+      }
+      const restored = restoreMemory(db, row.id);
+      if (!restored) return { ok: false, reason: "not-found" };
+      return { ok: true, id: String(row.id), content: String(row.content ?? "") };
+    },
+  });
+
   // --- Cleanup -----------------------------------------------------------
   ctx.effect(() => () => {
     if (sleepTimer) clearTimeout(sleepTimer);
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
+    if (typeof disposeRestore === "function") disposeRestore();
     if (typeof disposeAddFact === "function") disposeAddFact();
     if (typeof disposeRead === "function") disposeRead();
     // Unregister per-agent prompt sections before the database goes away, so a

@@ -623,6 +623,16 @@ function setStrength(db, id, value) {
   db.prepare("UPDATE memories SET strength = ? WHERE id = ?").run(clamped, id);
   return clamped;
 }
+function restoreMemory(db, id) {
+  return withTransaction(db, () => {
+    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(id);
+    if (!row) return false;
+    db.prepare(
+      "UPDATE memories SET status = 'active', archived_at = NULL, superseded_by = NULL WHERE id = ?"
+    ).run(id);
+    return true;
+  });
+}
 function archiveMemory(db, id, { supersededBy = null } = {}) {
   db.prepare(
     "UPDATE memories SET status = 'archived', archived_at = ?, superseded_by = COALESCE(?, superseded_by) WHERE id = ?"
@@ -1525,19 +1535,20 @@ function memoryIndexSignature(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return "";
   return entries.map((e) => `${e.id}:${e.chars}`).join("|");
 }
-function resolveMemoryRef(db, ref, { roleIds } = {}) {
+function resolveMemoryRef(db, ref, { roleIds, includeArchived = false } = {}) {
   const want = String(ref ?? "").trim();
   if (!want || !db) return null;
   const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : null;
   const roleSql = roles ? ` AND role_id IN (${roles.map(() => "?").join(",")})` : "";
   const roleArgs = roles ?? [];
+  const statusSql = includeArchived ? "" : " AND status = 'active'";
   try {
     const exact = db.prepare(
-      `SELECT * FROM memories WHERE id = ? AND status = 'active'${roleSql}`
+      `SELECT * FROM memories WHERE id = ?${statusSql}${roleSql}`
     ).get(want, ...roleArgs);
     if (exact) return exact;
     const rows = db.prepare(
-      `SELECT * FROM memories WHERE status = 'active'${roleSql} AND id LIKE ? LIMIT 3`
+      `SELECT * FROM memories WHERE 1 = 1${statusSql}${roleSql} AND id LIKE ? LIMIT 3`
     ).all(...roleArgs, `%${want}`);
     if (rows.length === 1) return rows[0];
     if (rows.length > 1) {
@@ -2042,7 +2053,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125061830" : "dev";
+var BUILD_STAMP = true ? "20261125062038" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2615,19 +2626,33 @@ async function apply(ctx, config) {
           layer: { type: "string" },
           roleId: { type: "string" },
           strength: { type: "number" },
-          content: { type: "string" }
+          content: { type: "string" },
+          archived: { type: "boolean" },
+          supersededBy: { type: "string" },
+          preview: { type: "string" }
         }
       },
       render: (_args, v) => [{
         type: "text",
-        text: v?.ok ? `[${v.layer} \xB7 ${v.roleId} \xB7 s=${Number(v.strength).toFixed(2)}] ${v.content}` : "\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\uFF08\u53EF\u80FD\u5DF2\u5F52\u6863\u6216 id \u6709\u6B67\u4E49\uFF09\u3002"
+        text: v?.ok ? `[${v.layer} \xB7 ${v.roleId} \xB7 s=${Number(v.strength).toFixed(2)}] ${v.content}` : v?.archived ? `\u8BE5\u8BB0\u5FC6\u5DF2\u5F52\u6863${v.supersededBy ? `\uFF08\u88AB ${v.supersededBy} \u53D6\u4EE3\uFF09` : ""}\uFF0C\u53EF\u8C03\u7528 memory_core_restore \u6062\u590D\uFF1A${v.preview ?? ""}` : "\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\uFF08\u53EF\u80FD\u5DF2\u5F52\u6863\u6216 id \u6709\u6B67\u4E49\uFF09\u3002"
       }]
     },
     async execute(args, exec) {
-      const row = resolveMemoryRef(db, args?.id, {
-        roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId)
-      });
-      if (!row) return { ok: false };
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const row = resolveMemoryRef(db, args?.id, { roleIds });
+      if (!row) {
+        const retired = resolveMemoryRef(db, args?.id, { roleIds, includeArchived: true });
+        if (retired && retired.status !== "active") {
+          return {
+            ok: false,
+            archived: true,
+            id: String(retired.id),
+            supersededBy: retired.superseded_by ? String(retired.superseded_by) : void 0,
+            preview: String(retired.content ?? "").slice(0, 120)
+          };
+        }
+        return { ok: false };
+      }
       return {
         ok: true,
         id: String(row.id),
@@ -2638,10 +2663,54 @@ async function apply(ctx, config) {
       };
     }
   });
+  const disposeRestore = ctx.tools.register({
+    name: "memory_core_restore",
+    description: "\u6062\u590D\u4E00\u6761\u5728\u4FDD\u7559\u671F\u5185\u88AB\u5F52\u6863\uFF08\u53D6\u4EE3\uFF09\u7684\u957F\u671F\u8BB0\u5FC6\u3002\u5F52\u6863\u8D85\u8FC7\u4FDD\u7559\u671F\u7684\u8BB0\u5FC6\u65E0\u6CD5\u6062\u590D\u3002",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: {
+        id: { type: "string", description: "\u8BB0\u5FC6 id \u6216\u7D22\u5F15\u91CC\u7684\u77ED id\u3002" }
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          reason: { type: "string" },
+          content: { type: "string" }
+        }
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok ? `\u5DF2\u6062\u590D\uFF08${String(v.id).slice(-6)}\uFF09\uFF1A${String(v.content ?? "").slice(0, 120)}` : v?.reason === "already-active" ? "\u8BE5\u8BB0\u5FC6\u672C\u6765\u5C31\u662F\u6D3B\u8DC3\u72B6\u6001\uFF0C\u65E0\u9700\u6062\u590D\u3002" : v?.reason === "expired" ? "\u8BE5\u8BB0\u5FC6\u7684\u4FDD\u7559\u671F\u5DF2\u8FC7\uFF0C\u65E0\u6CD5\u6062\u590D\u3002" : "\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\u3002"
+      }]
+    },
+    async execute(args, exec) {
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const row = resolveMemoryRef(db, args?.id, { roleIds, includeArchived: true });
+      if (!row) return { ok: false, reason: "not-found" };
+      if (row.status === "active") return { ok: true, id: String(row.id), reason: "already-active", content: String(row.content ?? "") };
+      const window = retentionMs(config.archiveRetentionDays);
+      const retiredAt = Number(row.archived_at) || 0;
+      if (retiredAt > 0 && Date.now() - retiredAt > window) {
+        return { ok: false, reason: "expired", id: String(row.id) };
+      }
+      const restored = restoreMemory(db, row.id);
+      if (!restored) return { ok: false, reason: "not-found" };
+      return { ok: true, id: String(row.id), content: String(row.content ?? "") };
+    }
+  });
   ctx.effect(() => () => {
     if (sleepTimer) clearTimeout(sleepTimer);
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
+    if (typeof disposeRestore === "function") disposeRestore();
     if (typeof disposeAddFact === "function") disposeAddFact();
     if (typeof disposeRead === "function") disposeRead();
     try {

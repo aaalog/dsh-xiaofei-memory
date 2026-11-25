@@ -47,6 +47,7 @@ check("provided memory-core", typeof provided["memory-core"] === "object");
 check("memory-core exposes retrieve/addFact/damp/stats", typeof provided["memory-core"]?.retrieve === "function" && typeof provided["memory-core"]?.addFact === "function" && typeof provided["memory-core"]?.damp === "function");
 check("registered retrieve tool", tools.some((t) => t.name === "memory_core_retrieve"));
 check("registered add_fact tool", tools.some((t) => t.name === "memory_core_add_fact"));
+check("registered restore tool", tools.some((t) => t.name === "memory_core_restore"));
 check("memory-core stats seeded", provided["memory-core"]?.stats()?.active === 11, `active=${provided["memory-core"]?.stats()?.active}`); // 10 seeds + derived soul digest
 
 // Exercise memory-core API.

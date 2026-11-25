@@ -180,19 +180,23 @@ export function memoryIndexSignature(entries) {
  * @param {{ roleIds?: string[] }} [options]
  * @returns {any | null}
  */
-export function resolveMemoryRef(db, ref, { roleIds } = {}) {
+export function resolveMemoryRef(db, ref, { roleIds, includeArchived = false } = {}) {
   const want = String(ref ?? "").trim();
   if (!want || !db) return null;
   const roles = Array.isArray(roleIds) && roleIds.length > 0 ? roleIds : null;
   const roleSql = roles ? ` AND role_id IN (${roles.map(() => "?").join(",")})` : "";
   const roleArgs = roles ?? [];
+  // A retired row stays reachable for the retention window, so a reader can see
+  // what it said and offer to restore it. Listing it as if it were live would be
+  // wrong; `includeArchived` is for exactly that lookup.
+  const statusSql = includeArchived ? "" : " AND status = 'active'";
   try {
     const exact = db.prepare(
-      `SELECT * FROM memories WHERE id = ? AND status = 'active'${roleSql}`
+      `SELECT * FROM memories WHERE id = ?${statusSql}${roleSql}`
     ).get(want, ...roleArgs);
     if (exact) return exact;
     const rows = db.prepare(
-      `SELECT * FROM memories WHERE status = 'active'${roleSql} AND id LIKE ? LIMIT 3`
+      `SELECT * FROM memories WHERE 1 = 1${statusSql}${roleSql} AND id LIKE ? LIMIT 3`
     ).all(...roleArgs, `%${want}`);
     if (rows.length === 1) return rows[0];
     if (rows.length > 1) {

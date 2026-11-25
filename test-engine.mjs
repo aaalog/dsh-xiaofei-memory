@@ -1,5 +1,5 @@
 // test-engine.mjs — verify dsh-xiaofei-memory engine modules against PRD acceptance.
-import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet, getMemory, purgeArchived } from "./src/db.js";
+import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet, getMemory, purgeArchived, archiveMemory, restoreMemory } from "./src/db.js";
 import { retrieveForPrompt } from "./src/retrieval.js";
 import { CaptureTracker } from "./src/capture.js";
 import { FeedbackManager } from "./src/feedback.js";
@@ -531,6 +531,28 @@ console.log("== 7n. a changed key token means a different fact, not a correction
   const generic = addMemory(db, { roleId: role, layer: "weekly", content: "部署完成" });
   const detailed = addMemory(db, { roleId: role, layer: "weekly", content: "部署完成：回滚脚本放在 rollback.sh" });
   check("a keyless short fact still merges with detail", detailed.merged === true && detailed.id === generic.id, JSON.stringify(detailed));
+}
+
+console.log("== 7o. a retired memory can be looked up and brought back ==");
+{
+  const role = "restore-role";
+  const kept = addMemory(db, { roleId: role, layer: "weekly", content: "这条记忆稍后会被归档再恢复" });
+  archiveMemory(db, kept.id, { supersededBy: "mem_successor" });
+
+  check("a retired row is hidden from the normal lookup",
+    resolveMemoryRef(db, kept.id, { roleIds: [role] }) === null);
+  const retired = resolveMemoryRef(db, kept.id, { roleIds: [role], includeArchived: true });
+  check("the retirement window keeps it findable", retired?.id === kept.id, String(retired?.id));
+  check("it records who replaced it", retired?.superseded_by === "mem_successor", String(retired?.superseded_by));
+
+  check("restore reports success", restoreMemory(db, kept.id) === true);
+  const back = db.prepare("SELECT status, archived_at, superseded_by FROM memories WHERE id=?").get(kept.id);
+  check("the row is live again", back?.status === "active", String(back?.status));
+  check("the retirement markers are cleared",
+    back?.archived_at === null && back?.superseded_by === null, JSON.stringify(back));
+  check("and it is findable without the archived flag",
+    resolveMemoryRef(db, kept.id, { roleIds: [role] })?.id === kept.id);
+  check("restoring an unknown id is not an error", restoreMemory(db, "mem_does_not_exist") === false);
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");
