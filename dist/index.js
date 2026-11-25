@@ -245,7 +245,12 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at    INTEGER NOT NULL,
   last_accessed INTEGER,
   status        TEXT NOT NULL DEFAULT 'active',
-  pinned        INTEGER NOT NULL DEFAULT 0
+  pinned        INTEGER NOT NULL DEFAULT 0,
+  -- Provenance for a retired row: which row replaced it, and when it was
+  -- retired. Without these an archived fact is deleted at the next purge with no
+  -- way to see what superseded it, or to change one's mind.
+  superseded_by TEXT,
+  archived_at   INTEGER
 );
 CREATE TABLE IF NOT EXISTS entity_index (
   entity     TEXT NOT NULL,
@@ -383,6 +388,13 @@ function addMissingColumns(db) {
   if (!columns.includes("pinned")) {
     db.exec("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
+  if (!columns.includes("superseded_by")) {
+    db.exec("ALTER TABLE memories ADD COLUMN superseded_by TEXT");
+  }
+  if (!columns.includes("archived_at")) {
+    db.exec("ALTER TABLE memories ADD COLUMN archived_at INTEGER");
+    db.prepare("UPDATE memories SET archived_at = ? WHERE status <> 'active' AND archived_at IS NULL").run(now());
+  }
 }
 var SEED_PIN_MARKER = "seedPinnedMigrated";
 function migrateData(db) {
@@ -495,11 +507,24 @@ function countMemories(db) {
 function addMemory(db, opts) {
   return withTransaction(db, () => addMemoryImpl(db, opts));
 }
+var KEY_TOKEN_RE = /\d{2,}|[A-Za-z_][A-Za-z0-9_.-]*\.[A-Za-z]{2,5}\b|https?:\/\/[^\s]+/g;
+function keyTokens(text) {
+  return new Set((String(text ?? "").match(KEY_TOKEN_RE) ?? []).map((x) => x.toLowerCase()));
+}
+function keyTokensDiffer(a, b) {
+  const left = keyTokens(a);
+  const right = keyTokens(b);
+  if (left.size === 0 || right.size === 0) return false;
+  for (const token of left) if (!right.has(token)) return true;
+  for (const token of right) if (!left.has(token)) return true;
+  return false;
+}
 function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1, noMerge = false, pinned = false }) {
   let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
   if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "\u2026";
   const cleanEntities = sanitizeEntities(entities);
+  const id = newId();
   const exact = noMerge ? null : db.prepare(
     "SELECT id, content, role_id FROM memories WHERE role_id = ? AND status = 'active' AND content = ? LIMIT 1"
   ).get(roleId, text);
@@ -509,7 +534,8 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   if (exact) candidates.unshift(exact);
   for (const c of candidates) {
     const sim = similarity(text, c.content);
-    if (sim >= 0.92) {
+    const keyDiff = keyTokensDiffer(text, c.content);
+    if (sim >= 0.92 && !keyDiff) {
       const existing = getMemory(db, c.id);
       const mergedEntities = Array.from(/* @__PURE__ */ new Set([...existing.entities ?? [], ...cleanEntities])).slice(0, 20);
       const mergedStrength = clamp((existing.strength ?? 1) + 0.1, 0.1, 5);
@@ -524,14 +550,11 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
-    if (sim >= 0.75) {
-      if (!isSeedMemoryId(c.id)) {
-        db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(c.id);
-      }
+    if (sim >= 0.75 || sim >= 0.6 && keyDiff) {
+      if (!isSeedMemoryId(c.id)) archiveMemory(db, c.id, { supersededBy: id });
       break;
     }
   }
-  const id = newId();
   db.prepare(
     "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
   ).run(id, roleId, layer, text, toJsonList(cleanEntities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
@@ -587,8 +610,10 @@ function setStrength(db, id, value) {
   db.prepare("UPDATE memories SET strength = ? WHERE id = ?").run(clamped, id);
   return clamped;
 }
-function archiveMemory(db, id) {
-  db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(id);
+function archiveMemory(db, id, { supersededBy = null } = {}) {
+  db.prepare(
+    "UPDATE memories SET status = 'archived', archived_at = ?, superseded_by = COALESCE(?, superseded_by) WHERE id = ?"
+  ).run(now(), supersededBy, id);
 }
 function touchAccessed(db, id) {
   db.prepare("UPDATE memories SET last_accessed = ? WHERE id = ?").run(now(), id);
@@ -713,12 +738,16 @@ function vacuumAndOptimize(db) {
   db.exec("VACUUM");
 }
 var SEED_ID_PATTERN = "mem_0[0-9][0-9]";
-function purgeArchived(db) {
+var DEFAULT_ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1e3;
+function purgeArchived(db, { retentionMs = DEFAULT_ARCHIVE_RETENTION_MS } = {}) {
   withTransaction(db, () => {
     db.prepare(
       `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
     ).run();
-    db.prepare("DELETE FROM memories WHERE status <> 'active' AND id <> ?").run(SOUL_DIGEST_ID);
+    const cutoff = now() - Math.max(0, Number(retentionMs) || 0);
+    db.prepare(
+      "DELETE FROM memories WHERE status <> 'active' AND id <> ? AND (archived_at IS NULL OR archived_at <= ?)"
+    ).run(SOUL_DIGEST_ID, cutoff);
   });
 }
 function isSeedMemoryId(id) {
@@ -1147,7 +1176,7 @@ function distillThreshold(size) {
   const scaled = Math.ceil(size * DISTILL_RATIO);
   return Math.min(DISTILL_MAX_THRESHOLD, Math.max(DISTILL_MIN_THRESHOLD, scaled || DISTILL_MIN_THRESHOLD));
 }
-async function runNightlySleep(db, { summarize, layer = "recent", logger } = {}) {
+async function runNightlySleep(db, { summarize, layer = "recent", logger, archiveRetentionMs } = {}) {
   const stats = {
     distilledGroups: 0,
     distilledMemories: 0,
@@ -1167,7 +1196,7 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
   const canDistill = typeof summarize === "function";
   stats.distillSkipped = canDistill ? null : "no-summarizer";
   if (!canDistill) {
-    purgeArchived(db);
+    purgeArchived(db, archiveRetentionMs === void 0 ? {} : { retentionMs: archiveRetentionMs });
     vacuumAndOptimize(db);
     stats.vacuumed = true;
     logger?.info?.("dsh-xiaofei-memory: nightly sleep: distillation skipped (no summarizer), vacuum done");
@@ -1244,7 +1273,7 @@ async function runNightlySleep(db, { summarize, layer = "recent", logger } = {})
       `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
     );
   }
-  purgeArchived(db);
+  purgeArchived(db, archiveRetentionMs === void 0 ? {} : { retentionMs: archiveRetentionMs });
   vacuumAndOptimize(db);
   stats.vacuumed = true;
   return stats;
@@ -1752,8 +1781,8 @@ function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
     weight: loadEvolution(db).retrievalWeight
   });
 }
-async function triggerNightlySleep(db, { summarize, logger } = {}) {
-  const stats = await runNightlySleep(db, { summarize, logger });
+async function triggerNightlySleep(db, { summarize, logger, archiveRetentionMs } = {}) {
+  const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs });
   recordSleepRun(db, stats);
   metaSet(db, "meta.lastManualSleep", Date.now());
   return stats;
@@ -1866,6 +1895,12 @@ var Config = z.object({
   /** 1-hop graph diffusion on/off (PRD 4.2). */
   enableGraphRecall: z.boolean().default(true),
   /** Nightly sleep hour, 0-23 (PRD 4.3). Volatile = editable in the console. */
+  /**
+   * How long a retired memory stays recoverable before the nightly pass deletes
+   * it physically. A supersede decision can be wrong, and it used to be gone the
+   * same night.
+   */
+  archiveRetentionDays: z.number().default(7).volatile(),
   sleepTimeHour: z.number().default(3).volatile(),
   /** Max tokens for a single recall injection (PRD 4.2). */
   maxRecallTokens: z.number().default(1200),
@@ -1917,7 +1952,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125025202" : "dev";
+var BUILD_STAMP = true ? "20261125025635" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2107,7 +2142,7 @@ async function apply(ctx, config) {
     }
     try {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-      const stats = await runNightlySleep(db, { summarize, logger });
+      const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1e3 });
       recordSleepRun(db, stats);
       releaseSleepLease();
       const recallStats = readRecallStats(db);
@@ -2189,7 +2224,7 @@ async function apply(ctx, config) {
     },
     triggerNightlySleep() {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-      return triggerNightlySleep(db, { summarize });
+      return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1e3 });
     },
     listSoulMemories() {
       return listSoulMemories(db);
@@ -2285,7 +2320,7 @@ async function apply(ctx, config) {
         });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-        return triggerNightlySleep(db, { summarize });
+        return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1e3 });
       }
       case "souls":
         return listSoulMemories(db);

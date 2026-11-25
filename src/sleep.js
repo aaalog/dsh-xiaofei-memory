@@ -27,7 +27,7 @@ export function distillThreshold(size) {
  * `summarize` is an optional async (texts[]) => string | null LLM hook;
  * falls back to a deterministic heuristic when absent.
  */
-export async function runNightlySleep(db, { summarize, layer = "recent", logger } = {}) {
+export async function runNightlySleep(db, { summarize, layer = "recent", logger, archiveRetentionMs } = {}) {
   const stats = {
     distilledGroups: 0, distilledMemories: 0, archived: 0, vacuumed: false,
     threshold: 0, scanned: 0, skippedEntities: 0, skippedGroups: 0, details: [],
@@ -54,7 +54,7 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
   const canDistill = typeof summarize === "function";
   stats.distillSkipped = canDistill ? null : "no-summarizer";
   if (!canDistill) {
-    purgeArchived(db);
+    purgeArchived(db, archiveRetentionMs === undefined ? {} : { retentionMs: archiveRetentionMs });
     vacuumAndOptimize(db);
     stats.vacuumed = true;
     logger?.info?.("dsh-xiaofei-memory: nightly sleep: distillation skipped (no summarizer), vacuum done");
@@ -154,7 +154,7 @@ export async function runNightlySleep(db, { summarize, layer = "recent", logger 
   }
 
   // Reclaim physical space for archived/soft-deleted rows.
-  purgeArchived(db);
+  purgeArchived(db, archiveRetentionMs === undefined ? {} : { retentionMs: archiveRetentionMs });
   vacuumAndOptimize(db);
   stats.vacuumed = true;
   return stats;

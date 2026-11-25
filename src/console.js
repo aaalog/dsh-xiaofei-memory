@@ -132,8 +132,8 @@ export function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }
 }
 
 /** Manually run the nightly sleep pass. */
-export async function triggerNightlySleep(db, { summarize, logger } = {}) {
-  const stats = await runNightlySleep(db, { summarize, logger });
+export async function triggerNightlySleep(db, { summarize, logger, archiveRetentionMs } = {}) {
+  const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs });
   recordSleepRun(db, stats);
   metaSet(db, "meta.lastManualSleep", Date.now());
   return stats;

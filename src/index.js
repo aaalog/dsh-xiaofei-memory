@@ -42,6 +42,12 @@ export const Config = z.object({
   /** 1-hop graph diffusion on/off (PRD 4.2). */
   enableGraphRecall: z.boolean().default(true),
   /** Nightly sleep hour, 0-23 (PRD 4.3). Volatile = editable in the console. */
+  /**
+   * How long a retired memory stays recoverable before the nightly pass deletes
+   * it physically. A supersede decision can be wrong, and it used to be gone the
+   * same night.
+   */
+  archiveRetentionDays: z.number().default(7).volatile(),
   sleepTimeHour: z.number().default(3).volatile(),
   /** Max tokens for a single recall injection (PRD 4.2). */
   maxRecallTokens: z.number().default(1200),
@@ -349,7 +355,7 @@ export async function apply(ctx, config) {
       const summarize = config.useLlmExtraction
         ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel)
         : null;
-      const stats = await runNightlySleep(db, { summarize, logger });
+      const stats = await runNightlySleep(db, { summarize, logger, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1000 });
       // The scheduled pass runs unattended; without this it leaves no trace.
       recordSleepRun(db, stats);
       releaseSleepLease();
@@ -441,7 +447,7 @@ export async function apply(ctx, config) {
     },
     triggerNightlySleep() {
       const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-      return triggerNightlySleep(db, { summarize });
+      return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1000 });
     },
     listSoulMemories() {
       return listSoulMemories(db);
@@ -530,7 +536,7 @@ export async function apply(ctx, config) {
         });
       case "sleep": {
         const summarize = config.useLlmExtraction ? buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel) : null;
-        return triggerNightlySleep(db, { summarize });
+        return triggerNightlySleep(db, { summarize, archiveRetentionMs: (Number(config.archiveRetentionDays) || 0) * 24 * 60 * 60 * 1000 });
       }
       case "souls": return listSoulMemories(db);
       case "roles": return liveRoles.map((r) => ({ ...r }));

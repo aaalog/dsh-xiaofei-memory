@@ -30,7 +30,12 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at    INTEGER NOT NULL,
   last_accessed INTEGER,
   status        TEXT NOT NULL DEFAULT 'active',
-  pinned        INTEGER NOT NULL DEFAULT 0
+  pinned        INTEGER NOT NULL DEFAULT 0,
+  -- Provenance for a retired row: which row replaced it, and when it was
+  -- retired. Without these an archived fact is deleted at the next purge with no
+  -- way to see what superseded it, or to change one's mind.
+  superseded_by TEXT,
+  archived_at   INTEGER
 );
 CREATE TABLE IF NOT EXISTS entity_index (
   entity     TEXT NOT NULL,
@@ -153,6 +158,16 @@ function addMissingColumns(db) {
   const columns = db.prepare("PRAGMA table_info(memories)").all().map((c) => c.name);
   if (!columns.includes("pinned")) {
     db.exec("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.includes("superseded_by")) {
+    db.exec("ALTER TABLE memories ADD COLUMN superseded_by TEXT");
+  }
+  if (!columns.includes("archived_at")) {
+    db.exec("ALTER TABLE memories ADD COLUMN archived_at INTEGER");
+    // Rows archived by an older build carry no timestamp. Stamp them now so they
+    // get the same retention window instead of being deleted on the next pass
+    // simply because the column did not exist when they were retired.
+    db.prepare("UPDATE memories SET archived_at = ? WHERE status <> 'active' AND archived_at IS NULL").run(now());
   }
 }
 
@@ -317,6 +332,33 @@ export function addMemory(db, opts) {
   return withTransaction(db, () => addMemoryImpl(db, opts));
 }
 
+/**
+ * The parts of a fact that decide what it is about: file names, URLs and any
+ * number long enough to be an identifier rather than a quantity.
+ */
+const KEY_TOKEN_RE = /\d{2,}|[A-Za-z_][A-Za-z0-9_.-]*\.[A-Za-z]{2,5}\b|https?:\/\/[^\s]+/g;
+
+function keyTokens(text) {
+  return new Set((String(text ?? "").match(KEY_TOKEN_RE) ?? []).map((x) => x.toLowerCase()));
+}
+
+/**
+ * Whether two texts name DIFFERENT key tokens.
+ *
+ * Both sides need at least one. A short generic fact ("部署完成") has none, and
+ * comparing it against a detailed follow-up would report a conflict where the
+ * detail is simply newer information — containment similarity is the right judge
+ * there, and the merge branch adds the detail.
+ */
+function keyTokensDiffer(a, b) {
+  const left = keyTokens(a);
+  const right = keyTokens(b);
+  if (left.size === 0 || right.size === 0) return false;
+  for (const token of left) if (!right.has(token)) return true;
+  for (const token of right) if (!left.has(token)) return true;
+  return false;
+}
+
 function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entities = [], originIds = [], strength = 1.0, noMerge = false, pinned = false }) {
   let text = scrubSecrets(normalizeContent(content));
   if (!text) throw new Error("memory content is empty");
@@ -326,6 +368,8 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "…";
   // The entity column is not covered by the body redaction above.
   const cleanEntities = sanitizeEntities(entities);
+  // Generated before the conflict pass so a retired row can name its successor.
+  const id = newId();
 
   // Conflict / merge pass against active memories at the same role. `noMerge`
   // is for callers that must end up with a new standalone row (nightly
@@ -344,7 +388,13 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
   if (exact) candidates.unshift(exact);
   for (const c of candidates) {
     const sim = similarity(text, c.content);
-    if (sim >= 0.92) {
+    // Filenames, numbers, ports and URLs decide what a fact is about, and
+    // similarity does not see them: "规则在 Product.php 里" and "规则在
+    // Search.php 里" score 0.72, so one edit of a key token used to either be
+    // merged away or left as two contradictory rows. A differing key token now
+    // forces the newer fact to supersede at a lower similarity floor.
+    const keyDiff = keyTokensDiffer(text, c.content);
+    if (sim >= 0.92 && !keyDiff) {
       // merge: strengthen the existing memory, extend its entities.
       const existing = getMemory(db, c.id);
       const mergedEntities = Array.from(new Set([...(existing.entities ?? []), ...cleanEntities])).slice(0, 20);
@@ -364,18 +414,17 @@ function addMemoryImpl(db, { roleId = "global", layer = "recent", content, entit
       replaceEntities(db, c.id, mergedEntities, mergedContent);
       return { id: c.id, merged: true };
     }
-    if (sim >= 0.75) {
-      // Conflicting fact: archive the older, write the new one. Seeded soul
-      // memories are exempt: they are identity, not facts to be superseded,
-      // and archiving them would let nightly purge destroy them for good.
-      if (!isSeedMemoryId(c.id)) {
-        db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(c.id);
-      }
+    if (sim >= 0.75 || (sim >= 0.6 && keyDiff)) {
+      // Conflicting fact: retire the older, write the new one. Seeded soul
+      // memories are exempt: they are identity, not facts to be superseded, and
+      // archiving them would let nightly purge destroy them for good.
+      // The retired row records who replaced it and when, which is what makes
+      // the decision reversible inside the retention window.
+      if (!isSeedMemoryId(c.id)) archiveMemory(db, c.id, { supersededBy: id });
       break;
     }
   }
 
-  const id = newId();
   db.prepare(
     "INSERT INTO memories (id, role_id, layer, content, entities, origin_ids, strength, created_at, status, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
   ).run(id, roleId, layer, text, toJsonList(cleanEntities), toJsonList(originIds), strength, now(), pinned ? 1 : 0);
@@ -460,8 +509,10 @@ export function setStrength(db, id, value) {
 }
 
 /** Archive a memory (soft delete). */
-export function archiveMemory(db, id) {
-  db.prepare("UPDATE memories SET status = 'archived' WHERE id = ?").run(id);
+export function archiveMemory(db, id, { supersededBy = null } = {}) {
+  db.prepare(
+    "UPDATE memories SET status = 'archived', archived_at = ?, superseded_by = COALESCE(?, superseded_by) WHERE id = ?"
+  ).run(now(), supersededBy, id);
 }
 
 /** Touch last_accessed. */
@@ -716,7 +767,10 @@ const SEED_ID_PATTERN = "mem_0[0-9][0-9]";
  * automatically. This guards every path that can archive a row (nightly sleep,
  * and the conflict pass in addMemory) without needing to trust those callers.
  */
-export function purgeArchived(db) {
+/** How long a retired row stays recoverable before it is physically removed. */
+export const DEFAULT_ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function purgeArchived(db, { retentionMs = DEFAULT_ARCHIVE_RETENTION_MS } = {}) {
   withTransaction(db, () => {
     db.prepare(
       `UPDATE memories SET status = 'active' WHERE status <> 'active' AND id GLOB '${SEED_ID_PATTERN}'`
@@ -724,7 +778,19 @@ export function purgeArchived(db) {
     // The derived identity row is not a seed, so the resurrection above does not
     // cover it: without this, archiving it once meant purge deleted it and the
     // always-on block stayed empty until the next process start.
-    db.prepare("DELETE FROM memories WHERE status <> 'active' AND id <> ?").run(SOUL_DIGEST_ID);
+    //
+    // Anything retired more recently than the retention window survives, so a
+    // supersede decision can be read back and, if it was wrong, corrected. A
+    // retired row used to be gone the same night, which made one bad similarity
+    // score permanent.
+    const cutoff = now() - Math.max(0, Number(retentionMs) || 0);
+    // A NULL timestamp means the row was retired by something that bypassed
+    // `archiveMemory` (a hand-run SQL statement, an older build). Those are
+    // treated as already expired rather than kept forever: the migration stamps
+    // every legacy row, so a NULL here is a deliberate outside write.
+    db.prepare(
+      "DELETE FROM memories WHERE status <> 'active' AND id <> ? AND (archived_at IS NULL OR archived_at <= ?)"
+    ).run(SOUL_DIGEST_ID, cutoff);
   });
 }
 

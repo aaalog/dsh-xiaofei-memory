@@ -177,8 +177,14 @@ check("sleep distilled a core summary", sleepStats.distilledGroups >= 1, JSON.st
 check("sleep archived >=12 originals", sleepStats.archived >= 12, `archived=${sleepStats.archived}`);
 const coreRows = db.prepare("SELECT count(*) n FROM memories WHERE layer='core' AND status='active'").get();
 check("core summaries added", (coreRows?.n ?? 0) > coreBefore, `core ${coreBefore} -> ${coreRows?.n}`);
+// Retirement now has a retention window: a supersede decision must be readable
+// after the fact instead of disappearing the same night.
 const archivedRows = db.prepare("SELECT count(*) n FROM memories WHERE status='archived'").get();
-check("archived purged after vacuum", (archivedRows?.n ?? 0) === 0, `archived=${archivedRows?.n}`);
+check("archived rows survive the retention window", (archivedRows?.n ?? 0) > 0, `archived=${archivedRows?.n}`);
+
+purgeArchived(db, { retentionMs: 0 });
+const purged = db.prepare("SELECT count(*) n FROM memories WHERE status='archived'").get();
+check("an expired retention is purged", (purged?.n ?? 0) === 0, `archived=${purged?.n}`);
 
 console.log("== 7. Evolution ==");
 const beforeEv = loadEvolution(db);
@@ -484,6 +490,27 @@ console.log("== 7m. the nightly pass runs once across processes ==");
   metaSet(db, key, String(Date.now() - 120_000));
   check("an expired claim can be taken", claimLease(db, key, 60_000) === true);
   releaseLease(db, key);
+}
+
+console.log("== 7n. a changed key token supersedes at a lower similarity ==");
+{
+  // "Product.php" vs "Search.php" scores 0.72 — under the conflict threshold —
+  // so the two contradictory rules used to coexist. A differing filename,
+  // number or URL is a different fact, and must retire the older row.
+  const role = "supersede-role";
+  const older = addMemory(db, { roleId: role, layer: "weekly", content: "Spdiam 的加价规则在 Product.php 里" });
+  const newer = addMemory(db, { roleId: role, layer: "weekly", content: "Spdiam 的加价规则在 Search.php 里" });
+  const retired = db.prepare("SELECT status, superseded_by, archived_at FROM memories WHERE id = ?").get(older.id);
+  check("a changed key token retires the older row", retired?.status === "archived", JSON.stringify(retired));
+  check("the retired row names its replacement", retired?.superseded_by === newer.id, `${retired?.superseded_by} vs ${newer.id}`);
+  check("the retirement is timestamped", Number(retired?.archived_at) > 0, String(retired?.archived_at));
+  check("the newer fact stays active", db.prepare("SELECT status FROM memories WHERE id=?").get(newer.id)?.status === "active");
+
+  // A short generic fact has no key token of its own; a detailed follow-up must
+  // merge into it, not replace it.
+  const generic = addMemory(db, { roleId: role, layer: "weekly", content: "部署完成" });
+  const detailed = addMemory(db, { roleId: role, layer: "weekly", content: "部署完成：回滚脚本放在 rollback.sh" });
+  check("a keyless short fact still merges with detail", detailed.merged === true && detailed.id === generic.id, JSON.stringify(detailed));
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");
