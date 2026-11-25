@@ -67,6 +67,16 @@ function similarity(a, b) {
   for (const g of ga) if (gb.has(g)) inter++;
   return inter / Math.max(1, Math.min(ga.size, gb.size));
 }
+function queryCoverage(query, doc) {
+  if (typeof query !== "string" || typeof doc !== "string") return 0;
+  if (query.length === 0 || doc.length === 0) return 0;
+  const gq = bigrams(query);
+  const gd = bigrams(doc);
+  if (gq.size === 0 || gd.size === 0) return 0;
+  let inter = 0;
+  for (const g of gq) if (gd.has(g)) inter++;
+  return inter / gq.size;
+}
 var QUOTED_RE = /["“”'‘’「」『』《》]([^"“”'‘’「」『』《》]{2,40})["“”'‘’「」『』《》]/g;
 var LATIN_TERM_RE = /\b[A-Z][A-Za-z0-9_\-+.]{1,30}\b/g;
 function extractEntities(text) {
@@ -631,15 +641,9 @@ function searchMemories(db, query, roleIds, {
   }
   const w = clamp(Number(weight) || 0, 0, 1);
   const floor = clamp(Number(minSim) || 0, 0, 1);
-  const coverTerms = terms.map((t) => t.toLowerCase());
-  const coverage = (haystack) => {
-    if (coverTerms.length === 0) return 0;
-    let hit = 0;
-    for (const term of coverTerms) if (haystack.includes(term)) hit++;
-    return hit / coverTerms.length;
-  };
+  const intent = intentOf(String(query ?? ""));
   const scored = rows.map((r) => {
-    const sim = coverage(String(r.content ?? "").toLowerCase());
+    const sim = queryCoverage(intent, r.content);
     const strengthFactor = Math.pow(Math.max(0.1, r.strength ?? 1), STRENGTH_EXPONENT);
     const score = (1 - w + w * sim) * strengthFactor * timeDecay(r.created_at, decay);
     return { ...r, entities: parseJsonList(r.entities), _score: score, _sim: sim };
@@ -750,6 +754,13 @@ var QUERY_STOP_TERMS = /* @__PURE__ */ new Set([
 ]);
 function trimQueryText(text) {
   return String(text ?? "").replace(/```[\s\S]*?```/g, " ").slice(-QUERY_TAIL_CHARS);
+}
+function intentOf(text) {
+  const tail = trimQueryText(text);
+  const lines = tail.split(/\r?\n+/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length > 1) return lines[lines.length - 1];
+  const sentences = tail.split(/(?<=[。！？!?；;])\s*/u).map((s) => s.trim()).filter(Boolean);
+  return sentences.length > 1 ? sentences[sentences.length - 1] : tail;
 }
 function tokenizeQuery(text) {
   const tail = trimQueryText(text).slice(-QUERY_TAIL_CHARS);
@@ -1827,7 +1838,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261123062021" : "dev";
+var BUILD_STAMP = true ? "20261125014737" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

@@ -9,6 +9,7 @@ import {
   now,
   timeDecay,
   similarity,
+  queryCoverage,
   parseJsonList,
   toJsonList,
   normalizeContent,
@@ -568,21 +569,37 @@ export function searchMemories(db, query, roleIds, {
 
   const w = clamp(Number(weight) || 0, 0, 1);
   const floor = clamp(Number(minSim) || 0, 0, 1);
-  // Coverage is measured against the SELECTED query terms, not every bigram in
-  // the raw message. Against the raw text a 2000-character paste has hundreds
-  // of bigrams, so the row that answers it scored ~0.008 and lost to noise that
-  // merely shared one word. This asks the useful question instead: how many of
-  // the query's key terms does this row contain?
-  const coverTerms = terms.map((t) => t.toLowerCase());
-  const coverage = (haystack) => {
-    if (coverTerms.length === 0) return 0;
-    let hit = 0;
-    for (const term of coverTerms) if (haystack.includes(term)) hit++;
-    return hit / coverTerms.length;
-  };
+  // Coverage is measured over the query terms that can actually be answered,
+  // not over every term the tokenizer produced.
+  //
+  // The tokenizer deliberately emits more than it expects to match: a whole CJK
+  // phrase ("评审怎么改") and the bigrams it spans ("审怎", "么改") are useful as
+  // LIKE patterns but can never appear verbatim in a stored memory. Counting
+  // them in the denominator diluted a good answer to 2/9 = 0.22 and pushed it
+  // under the relevance floor, so natural questions — "Spdiam 价格配置 评审怎么改？"
+  // — started returning nothing at all.
+  //
+  // A term that appears in no candidate carries no evidence either way, so it is
+  // dropped from the denominator. What remains is the set of terms this query
+  // can be scored on.
+  // Score with the same bigram coverage as before, but against the part of the
+  // message that states the ask rather than the whole message.
+  //
+  // Two metrics were tried before this one. Scoring against the raw message
+  // failed on pasted logs (hundreds of noise bigrams diluted the answer to
+  // ~0.008). Scoring by "how many selected terms the row contains" broke
+  // natural questions instead: the tokenizer emits phrases and cross-word
+  // bigrams that can never appear verbatim, so 5 good rows scored 0.22 and
+  // vanished under the floor — and capping by document frequency then produced
+  // false positives on vague questions. Bigram coverage of the intent sentence
+  // keeps the behaviour that already worked and fixes the paste case.
+  // Extract the intent from the RAW text: `q` is normalized, which collapses
+  // newlines into spaces, and line splitting is how the pasted payload is
+  // separated from the question underneath.
+  const intent = intentOf(String(query ?? ""));
   const scored = rows
     .map((r) => {
-      const sim = coverage(String(r.content ?? "").toLowerCase());
+      const sim = queryCoverage(intent, r.content);
       // Strength is a multiplier without an upper bound (it climbs to 5 with
       // merges and recalls), so a merely *frequent* memory used to outrank the
       // one that actually answers the question. Dampening it keeps popularity
@@ -730,6 +747,21 @@ function trimQueryText(text) {
   return String(text ?? "")
     .replace(/```[\s\S]*?```/g, " ")
     .slice(-QUERY_TAIL_CHARS);
+}
+
+/**
+ * The part of a message that states the ask.
+ *
+ * People paste a log or a diff and write the question underneath. The last
+ * non-empty line is that question in every real example seen; for a
+ * single-line message the last sentence is used when the text contains several.
+ */
+function intentOf(text) {
+  const tail = trimQueryText(text);
+  const lines = tail.split(/\r?\n+/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length > 1) return lines[lines.length - 1];
+  const sentences = tail.split(/(?<=[。！？!?；;])\s*/u).map((s) => s.trim()).filter(Boolean);
+  return sentences.length > 1 ? sentences[sentences.length - 1] : tail;
 }
 
 /** Split a query into search terms, ranked by evidence rather than position. */

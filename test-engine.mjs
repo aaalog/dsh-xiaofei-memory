@@ -396,6 +396,38 @@ console.log("== 7i. role policy is enforced, not decorative ==");
   check("omitting roleIds keeps the unrestricted behaviour", resolveMemoryRef(db, rid)?.id === rid);
 }
 
+console.log("== 7j. intent extraction: the question under a paste ==");
+{
+  // A paste of DISTINCT lines (not the same line repeated, whose bigram set
+  // collapses) is what actually diluted the query: scoring used the whole
+  // message, so the answer row fell to ~0.18 and under the floor. Scoring the
+  // last line instead fixes it — and must not change the bare-question result.
+  const role = "intent-role";
+  const target = addMemory(db, {
+    roleId: role, layer: "weekly",
+    content: "Spdiam 价格配置 评审要按逐层叠加的方式改",
+  }).id;
+  const lines = [];
+  for (let i = 0; i < 90; i++) {
+    lines.push(`2026-11-2${(i % 9) + 1} 1${i % 10}:0${i % 6} ERROR code=ERR_${(i * 7919).toString(36)} ` +
+      `route=/api/v${i % 4}/sku/${i * 31} handler=SpdiamController${i}`);
+  }
+  const ask = "Spdiam 价格配置 评审怎么改？";
+  const bare = searchMemories(db, ask, [role], { limit: 5, minSim: 0.3 });
+  check("bare question still recalls", bare.some((h) => h.id === target), `hits=${bare.length}`);
+
+  const pasted = searchMemories(db, lines.join("\n") + "\n\n" + ask, [role], { limit: 5, minSim: 0.3 });
+  check("a varied 7k paste still recalls the trailing question", pasted.some((h) => h.id === target), `hits=${pasted.length}`);
+  const bareSim = bare.find((h) => h.id === target)?._sim ?? -1;
+  const pastedSim = pasted.find((h) => h.id === target)?._sim ?? -2;
+  check("the paste scores the answer like the bare question",
+    Math.abs(bareSim - pastedSim) < 0.01, `${bareSim.toFixed(3)} vs ${pastedSim.toFixed(3)}`);
+
+  // The other direction: an unrelated question must stay empty.
+  const unrelated = searchMemories(db, "今天晚饭吃什么", [role], { limit: 5, minSim: 0.3 });
+  check("an unrelated question still returns nothing", unrelated.length === 0, `hits=${unrelated.length}`);
+}
+
 console.log("== 8. Performance (PRD acceptance #4) ==");
 const t0 = performance.now();
 for (let i = 0; i < 20; i++) {
