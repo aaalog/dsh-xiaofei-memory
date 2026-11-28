@@ -88,6 +88,14 @@ export function acceptSummary(text, sources, { minChars = 12, maxChars = 120 } =
     // including the punctuation; clamp so the limit is a real limit.
     if (Array.from(out).length > maxChars) out = Array.from(out).slice(0, maxChars).join("");
   }
+  // A reply that ends on a clause separator was cut mid-sentence — usually by
+  // the model's token limit, not by us. The first real summary ended with
+  // "多语言按lang合并，" and read as broken. Stripping the dangling separators
+  // is honest: the content that survived is kept, and nothing invents a period
+  // the model never wrote. If too little survives, the group is rejected and
+  // retried next night instead of storing a stub.
+  out = out.replace(/[，、；：,;\s]+$/u, "");
+
   const length = Array.from(out).length;
   if (length < minChars) return { ok: false, reason: "too-short" };
 

@@ -1404,6 +1404,7 @@ function acceptSummary(text, sources, { minChars = 12, maxChars = 120 } = {}) {
     out = cut >= minChars ? head.slice(0, cut + 1) : chars.slice(0, maxChars).join("");
     if (Array.from(out).length > maxChars) out = Array.from(out).slice(0, maxChars).join("");
   }
+  out = out.replace(/[，、；：,;\s]+$/u, "");
   const length = Array.from(out).length;
   if (length < minChars) return { ok: false, reason: "too-short" };
   const mine = contentGrams(out);
@@ -2275,7 +2276,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128093913" : "dev";
+var BUILD_STAMP = true ? "20261128095320" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

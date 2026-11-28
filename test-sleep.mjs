@@ -249,6 +249,14 @@ console.log("== 3e. output acceptance: a reply is not automatically a memory =="
     acceptSummary("好的", sources).ok === false);
   check("no shared content means noise",
     acceptSummary("今天天气不错适合出去走走散散步吧", sources).ok === false);
+  // The first real summary ended with "多语言按lang合并，" — cut mid-sentence by
+  // the model's token limit. A dangling separator must not be stored.
+  const dangling = acceptSummary("豆包负责审核插件源码并生成报告，多语言按lang合并，", sources);
+  check("a dangling separator is stripped", dangling.ok === true && !/[，、；：,;]$/.test(dangling.text),
+    JSON.stringify(dangling));
+  check("an acknowledgement with a dangling separator is rejected",
+    acceptSummary("好的，", sources).ok === false);
+
   check("an over-long reply is cut at a sentence boundary",
     (() => {
       const long = ("豆包负责审核插件源码。" ).repeat(20);
