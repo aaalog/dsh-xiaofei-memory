@@ -1026,42 +1026,92 @@ function releaseLease(db, key) {
 }
 
 // src/llm-call.js
+function providerIdOf(entry) {
+  if (typeof entry === "string") return entry.trim() || null;
+  if (!entry || typeof entry !== "object") return null;
+  for (const key of ["provider", "id", "name"]) {
+    const value = entry[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+function inlineModels(entry) {
+  if (!entry || typeof entry !== "object" || !Array.isArray(entry.models)) return [];
+  return entry.models.map((m) => typeof m === "string" ? m : m?.id).filter((m) => typeof m === "string" && m);
+}
 async function resolveModelRoute(llm, model) {
   const wanted = String(model ?? "").trim();
   if (!wanted || !llm) return null;
   const ids = [];
+  const inline = /* @__PURE__ */ new Map();
   try {
-    const providers = await llm.listProviders();
+    const providers = await llm.listProviders?.(void 0);
     for (const entry of Array.isArray(providers) ? providers : []) {
-      const id = typeof entry === "string" ? entry : entry?.id;
-      if (id) ids.push(String(id));
+      const id = providerIdOf(entry);
+      if (!id) continue;
+      if (!ids.includes(id)) ids.push(id);
+      const models = inlineModels(entry);
+      if (models.length > 0) inline.set(id, models);
     }
   } catch {
   }
   for (const provider of ids) {
-    try {
-      const models = await llm.listModels(provider);
-      const hit = (Array.isArray(models) ? models : []).find((m) => (typeof m === "string" ? m : m?.id) === wanted);
-      if (hit) return { provider, model: typeof hit === "string" ? hit : hit.id };
-    } catch {
+    if ((inline.get(provider) ?? []).includes(wanted)) return { provider, model: wanted };
+  }
+  if (typeof llm.listModels === "function") {
+    for (const provider of ids) {
+      try {
+        const models = await llm.listModels(provider);
+        const hit = (Array.isArray(models) ? models : []).find((m) => (typeof m === "string" ? m : m?.id) === wanted);
+        if (hit) return { provider, model: typeof hit === "string" ? hit : hit.id };
+      } catch {
+      }
     }
   }
   return ids.length > 0 ? { provider: ids[0], model: wanted } : null;
 }
-function buildLlmCaller(ctx) {
-  const llm = ctx?.get?.("llm");
-  if (!llm) return null;
+function buildLlmCaller(ctx, { onError } = {}) {
+  const report = (reason) => {
+    try {
+      onError?.(String(reason).slice(0, 200));
+    } catch {
+    }
+  };
+  let llm;
+  try {
+    llm = ctx?.get?.("llm");
+  } catch {
+    llm = void 0;
+  }
+  if (!llm) {
+    report("no-llm-service");
+    return null;
+  }
   return async (prompt, { model } = {}) => {
     const text = String(prompt ?? "");
-    if (!text) return null;
+    if (!text) {
+      report("empty-prompt");
+      return null;
+    }
     try {
       if (typeof llm.complete === "function") {
         const answer2 = await llm.complete(text, { model });
-        return typeof answer2 === "string" && answer2.trim() ? answer2.trim() : null;
+        const trimmed = typeof answer2 === "string" ? answer2.trim() : "";
+        if (!trimmed) {
+          report("complete-empty");
+          return null;
+        }
+        return trimmed;
       }
-      if (typeof llm.stream !== "function") return null;
+      if (typeof llm.stream !== "function") {
+        report("no-stream");
+        return null;
+      }
       const route = await resolveModelRoute(llm, model);
-      if (!route) return null;
+      if (!route) {
+        report(`no-route(model=${String(model ?? "")})`);
+        return null;
+      }
       let assembled = "";
       const stream = llm.stream({
         provider: route.provider,
@@ -1070,11 +1120,19 @@ function buildLlmCaller(ctx) {
       });
       for await (const chunk of stream) {
         if (chunk?.type === "text-delta") assembled += String(chunk.text ?? "");
-        else if (chunk?.type === "finish" && chunk.reason?.kind === "error") return null;
+        else if (chunk?.type === "finish" && chunk.reason?.kind === "error") {
+          report(`error-finish(${route.provider}/${route.model}): ${chunk.reason?.message ?? ""}`);
+          return null;
+        }
       }
       const answer = assembled.trim();
-      return answer || null;
-    } catch {
+      if (!answer) {
+        report(`empty-stream(${route.provider}/${route.model})`);
+        return null;
+      }
+      return answer;
+    } catch (e) {
+      report(`call-threw: ${e?.message ?? e}`);
       return null;
     }
   };
@@ -2116,7 +2174,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261125101104" : "dev";
+var BUILD_STAMP = true ? "20261128083621" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2295,9 +2353,18 @@ async function apply(ctx, config) {
     }, next.getTime() - now2);
     if (typeof sleepTimer?.unref === "function") sleepTimer.unref();
   };
+  const llmErrors = [];
+  const recordLlmError = (reason) => {
+    try {
+      llmErrors.push(reason);
+      if (llmErrors.length > 8) llmErrors.shift();
+      metaSet(db, "meta.lastLlmError", JSON.stringify({ at: Date.now(), reason, recent: llmErrors.slice(-4) }));
+    } catch {
+    }
+  };
   const doSleep = async () => {
     try {
-      const summarize = buildSummarizer(ctx, config);
+      const summarize = buildSummarizer(ctx, config, recordLlmError);
       const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       recordSleepRun(db, stats);
       const recallStats = readRecallStats(db);
@@ -2378,7 +2445,7 @@ async function apply(ctx, config) {
       return previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens });
     },
     triggerNightlySleep() {
-      const summarize = buildSummarizer(ctx, config);
+      const summarize = buildSummarizer(ctx, config, recordLlmError);
       return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
     },
     listSoulMemories() {
@@ -2474,7 +2541,7 @@ async function apply(ctx, config) {
           pinnedOnly: config.coreMemoryPinnedOnly !== false
         });
       case "sleep": {
-        const summarize = buildSummarizer(ctx, config);
+        const summarize = buildSummarizer(ctx, config, recordLlmError);
         return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       }
       case "souls":
@@ -2782,9 +2849,10 @@ async function apply(ctx, config) {
     closeMemoryDb(db);
   });
 }
-function buildSummarizer(ctx, config) {
+function buildSummarizer(ctx, config, onError) {
   if (!config.enableSleepSummarizer && !config.useLlmExtraction) return null;
-  return buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel);
+  const callLlm = buildLlmCaller(ctx, { onError });
+  return buildSleepSummarizer(callLlm, config.extractionModel);
 }
 function buildSleepSummarizer(callLlm, model) {
   if (typeof callLlm !== "function") return null;

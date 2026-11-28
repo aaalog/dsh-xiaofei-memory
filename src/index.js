@@ -363,10 +363,22 @@ export async function apply(ctx, config) {
    * double-counts the log.
    */
 
+  // Diagnostics for the LLM path. A silent null is what let the summariser stay
+  // broken for weeks, so every failure is stamped where it can be read later
+  // without a restart or a debugger.
+  const llmErrors = [];
+  const recordLlmError = (reason) => {
+    try {
+      llmErrors.push(reason);
+      if (llmErrors.length > 8) llmErrors.shift();
+      metaSet(db, "meta.lastLlmError", JSON.stringify({ at: Date.now(), reason, recent: llmErrors.slice(-4) }));
+    } catch { /* diagnostics never break a pass */ }
+  };
+
   const doSleep = async () => {
     // Manual triggers bypass the lease: the owner asked for this pass now.
     try {
-      const summarize = buildSummarizer(ctx, config);
+      const summarize = buildSummarizer(ctx, config, recordLlmError);
       const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       // The scheduled pass runs unattended; without this it leaves no trace.
       recordSleepRun(db, stats);
@@ -457,7 +469,7 @@ export async function apply(ctx, config) {
       return previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens });
     },
     triggerNightlySleep() {
-      const summarize = buildSummarizer(ctx, config);
+      const summarize = buildSummarizer(ctx, config, recordLlmError);
       return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
     },
     listSoulMemories() {
@@ -546,7 +558,7 @@ export async function apply(ctx, config) {
           pinnedOnly: config.coreMemoryPinnedOnly !== false,
         });
       case "sleep": {
-        const summarize = buildSummarizer(ctx, config);
+        const summarize = buildSummarizer(ctx, config, recordLlmError);
         return triggerNightlySleep(db, { summarize, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       }
       case "souls": return listSoulMemories(db);
@@ -889,9 +901,11 @@ export async function apply(ctx, config) {
  * `useLlmExtraction` implies it, keeping the old behaviour; `enableSleepSummarizer`
  * enables distillation alone.
  */
-function buildSummarizer(ctx, config) {
+function buildSummarizer(ctx, config, onError) {
   if (!config.enableSleepSummarizer && !config.useLlmExtraction) return null;
-  return buildSleepSummarizer(buildLlmCaller(ctx), config.extractionModel);
+  const callLlm = buildLlmCaller(ctx, { onError });
+  // `buildLlmCaller` returning null already reported why through onError.
+  return buildSleepSummarizer(callLlm, config.extractionModel);
 }
 
 

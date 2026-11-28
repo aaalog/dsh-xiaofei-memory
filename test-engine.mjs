@@ -8,7 +8,7 @@ import { coreMemorySignature } from "./src/core-memory.js";
 import { resolveMemoryRef } from "./src/memory-index.js";
 import { isRoleEnabled, roleIdsForAgent } from "./src/roles.js";
 import { claimLease, releaseLease } from "./src/lease.js";
-import { buildLlmCaller, resolveModelRoute } from "./src/llm-call.js";
+import { buildLlmCaller, resolveModelRoute, providerIdOf } from "./src/llm-call.js";
 import { loadEvolution, runEvolution } from "./src/evolution.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -558,9 +558,15 @@ console.log("== 7o. a retired memory can be looked up and brought back ==");
 
 console.log("== 7p. the LLM caller speaks the service's actual API ==");
 {
-  // The host `llm` service exposes `stream()`, not `complete()`. The old caller
-  // returned null whenever `complete` was missing, which made every LLM-backed
-  // path silently fall back to the heuristic — distillation included.
+  // The host `llm` service exposes `stream()`, not `complete()`; the first caller
+  // returned null whenever `complete` was missing, which silently disabled every
+  // LLM-backed path. The live provider list also carries `provider`, not `id` —
+  // the second caller read `id`, found nothing, and returned null again.
+  check("a provider entry may carry `provider`", providerIdOf({ provider: "sensenova" }) === "sensenova");
+  check("or `id`", providerIdOf({ id: "prov-b" }) === "prov-b");
+  check("or be a bare string", providerIdOf("prov-c") === "prov-c");
+  check("and nonsense yields null", providerIdOf({}) === null && providerIdOf(42) === null);
+
   const chunks = [
     { type: "block-start", index: 0, blockType: "text" },
     { type: "text-delta", index: 0, text: "三条记忆" },
@@ -569,37 +575,55 @@ console.log("== 7p. the LLM caller speaks the service's actual API ==");
   ];
   const seen = [];
   const llm = {
-    async listProviders() { return [{ id: "prov-a" }, { id: "prov-b" }]; },
-    async listModels(provider) { return provider === "prov-b" ? [{ id: "wanted-model" }] : [{ id: "other" }]; },
+    async listProviders() {
+      return [{ provider: "prov-a" }, { provider: "prov-b", models: [{ id: "wanted-model" }] }];
+    },
     stream(options) {
       seen.push(options);
       return (async function* () { for (const c of chunks) yield c; })();
     },
   };
   const route = await resolveModelRoute(llm, "wanted-model");
-  check("the route is resolved to the provider that advertises the model",
+  check("the route names the provider that advertises the model",
     route?.provider === "prov-b" && route?.model === "wanted-model", JSON.stringify(route));
 
-  const caller = buildLlmCaller({ get: (name) => (name === "llm" ? llm : undefined) });
+  const errors = [];
+  const caller = buildLlmCaller({ get: (name) => (name === "llm" ? llm : undefined) }, {
+    onError: (r) => errors.push(r),
+  });
   const answer = await caller("把这几条压缩成一句", { model: "wanted-model" });
   check("the stream is assembled into one string", answer === "三条记忆压缩成一句要点", JSON.stringify(answer));
   check("the call names provider and model", seen[0]?.provider === "prov-b" && seen[0]?.model === "wanted-model",
     JSON.stringify({ provider: seen[0]?.provider, model: seen[0]?.model }));
   check("the prompt travels as a user message",
-    seen[0]?.messages?.[0]?.role === "user" && seen[0]?.messages?.[0]?.content?.[0]?.text === "把这几条压缩成一句");
+    seen[0]?.messages?.[0]?.role === "user" && seen[0]?.messages?.[0]?.content?.[0]?.text === "把这几条压缩成一句",
+    JSON.stringify(seen[0]?.messages?.[0]?.content?.[0]?.text));
+  check("an inline model list needs no listModels RPC", typeof llm.listModels === "undefined");
 
-  check("no llm service means no caller", buildLlmCaller({ get: () => undefined }) === null);
+  // Diagnostics: a silent null is what hid the bug for weeks.
+  const noService = [];
+  check("no llm service means no caller", buildLlmCaller({ get: () => undefined }, { onError: (r) => noService.push(r) }) === null);
+  check("and it says why", noService[0] === "no-llm-service", JSON.stringify(noService));
 
-  const broken = { async listProviders() { return ["p"]; }, async listModels() { return []; }, stream() { throw new Error("boom"); } };
-  const brokenAnswer = await buildLlmCaller({ get: () => broken })("x", { model: "m" });
-  check("a throwing stream degrades to null", brokenAnswer === null, String(brokenAnswer));
+  const thrown = [];
+  const broken = { async listProviders() { return [{ provider: "p" }]; }, stream() { throw new Error("boom"); } };
+  const broke = await buildLlmCaller({ get: () => broken }, { onError: (r) => thrown.push(r) })("x", { model: "m" });
+  check("a throwing stream degrades to null", broke === null, String(broke));
+  check("and reports the throw", /call-threw: boom/.test(thrown[0] ?? ""), JSON.stringify(thrown));
 
+  const finished = [];
   const errorFinish = {
-    async listProviders() { return ["p"]; },
+    async listProviders() { return [{ provider: "p" }]; },
     stream() { return (async function* () { yield { type: "finish", reason: { kind: "error" } }; })(); },
   };
   check("an error finish degrades to null",
-    (await buildLlmCaller({ get: () => errorFinish })("x", { model: "m" })) === null);
+    (await buildLlmCaller({ get: () => errorFinish }, { onError: (r) => finished.push(r) })("x", { model: "m" })) === null);
+  check("and reports the finish", /error-finish/.test(finished[0] ?? ""), JSON.stringify(finished));
+
+  const unrouted = [];
+  const emptyProviders = { async listProviders() { return []; }, stream() {} };
+  await buildLlmCaller({ get: () => emptyProviders }, { onError: (r) => unrouted.push(r) })("x", { model: "m" });
+  check("no provider routes reports no-route", /no-route/.test(unrouted[0] ?? ""), JSON.stringify(unrouted));
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");
