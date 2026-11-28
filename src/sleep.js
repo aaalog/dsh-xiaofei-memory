@@ -183,6 +183,22 @@ export async function runNightlySleep(db, {
   // summary and from double-counting `archived`.
   const archivedIds = new Set();
 
+  // Batches, not one slice per group.
+  //
+  // The threshold is absolute (about ten) while a summary covers at most eight
+  // rows, so a group of ten to seventeen was distilled once and the remainder -
+  // two to nine rows - sat below the threshold for ever, neither summarised nor
+  // purged. Processing the whole group in batches of eight keeps every summary
+  // matched to exactly the rows it replaces.
+  //
+  // The caps bound one night's cost: at most MAX_BATCHES_PER_PASS LLM calls, and
+  // a trailing batch smaller than a real group waits for more rows instead of
+  // becoming a permanent fragment.
+  const BATCH = 8;
+  const MAX_BATCHES_PER_PASS = 4;
+  const MIN_BATCH = 5;
+  let batchesUsed = 0;
+
   for (const { roleId, entity, memories } of groups.values()) {
     const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values())
       .filter((m) => !archivedIds.has(m.id));
@@ -190,84 +206,94 @@ export async function runNightlySleep(db, {
     // Defence in depth: the key already scopes the group to one role, but a row
     // whose role_id changed mid-pass would still poison the summary.
     if (unique.some((m) => (m.role_id ?? "global") !== roleId)) { stats.skippedEntities++; continue; }
-    // Summarise and archive the SAME slice. The summariser is fed at most eight
-    // rows, so archiving the whole group deleted twelve rows per group whose
-    // text never reached the summary - "eight in, twenty out". The remainder
-    // stays in the layer and comes back next night, which makes distillation
-    // progressive instead of lossy.
-    const summarised = unique
-      .slice()
-      .sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0))
-      .slice(0, 8);
-    const ids = summarised.map((m) => m.id);
-    const texts = summarised.map((m) => m.content);
-    let summary = null;
-    if (typeof summarize === "function") {
-      try { summary = await summarize(texts); } catch { /* skip this group */ }
-    }
-    // A summary that did not come back must NOT fall back to a truncation: the
-    // originals are archived and then physically purged below, so a lossy
-    // stand-in would destroy more than it preserves. Skip the group instead.
-    // Accept only a string. A non-string (an object, or a provider that returns
-    // a structured reply) would be coerced to "[object Object]" by
-    // normalizeContent, pass the emptiness check, and then the originals would
-    // be archived and purged in favour of garbage.
-    const content = typeof summary === "string" ? normalizeContent(summary) : "";
-    if (!content) {
-      stats.skippedGroups++;
-      logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
-      continue;
-    }
-    // Output acceptance. A reply that is a refusal, a meta-comment, a question,
-    // or has no content in common with what it summarised is not a memory. The
-    // group is left untouched — nothing written, nothing archived — so the rows
-    // come back next night instead of being replaced by noise.
-    const verdict = acceptSummary(content, texts);
-    if (!verdict.ok) {
-      stats.rejectedGroups++;
-      stats.rejections.push({ entity, roleId, reason: verdict.reason, chars: Array.from(content).length });
-      stats.skippedGroups++;
-      logger?.warn?.(`dsh-xiaofei-memory: distillation rejected "${entity}" (${ids.length} memories): ${verdict.reason}`);
-      continue;
-    }
-    // One group is one unit: summary row + archives commit together, so an
-    // exception can no longer leave a summary written while its originals
-    // survive (duplicates) or originals archived with no summary (loss).
-    const res = withTransaction(db, () => {
-      const written = addMemory(db, {
-        roleId,
-        layer: "core",
-        content: verdict.text,
-        entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
-        originIds: ids,
-        strength: 1.0,
-        // The summary must be its own row: merging it into a row from `ids` used
-        // to hand back that id, which the archive loop then archived and purged.
-        noMerge: true,
-      });
-      for (const id of ids) {
-        // Never distil away the seeded soul memories, and never archive the row
-        // the summary landed in (only reachable if `noMerge` is ever lost).
-        if (isSeedMemoryId(id) || id === written?.id) continue;
-        archiveMemory(db, id);
-        archivedIds.add(id);
-        stats.archived++;
+
+    const sorted = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0));
+    let abandoned = false;
+
+    for (let offset = 0; offset < sorted.length && !abandoned; offset += BATCH) {
+      if (batchesUsed >= MAX_BATCHES_PER_PASS) {
+        stats.batchesDeferred = (stats.batchesDeferred ?? 0) + 1;
+        break;
       }
-      return written;
-    });
-    stats.distilledGroups++;
-    stats.distilledMemories += ids.length;
-    stats.details.push({
-      roleId,
-      entity,
-      count: ids.length,
-      summary: content.slice(0, SUMMARY_MAX_CHARS),
-      newId: res?.id ?? null,
-      merged: res?.merged ?? false,
-    });
-    logger?.info?.(
-      `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
-    );
+      const batch = sorted.slice(offset, offset + BATCH);
+      const trailing = offset + BATCH >= sorted.length;
+      if (trailing && offset > 0 && batch.length < MIN_BATCH) break;
+
+      const ids = batch.map((m) => m.id);
+      const texts = batch.map((m) => m.content);
+      let summary = null;
+      try { summary = await summarize(texts); } catch { /* skip this batch */ }
+
+      // A summary that did not come back must NOT fall back to a truncation: the
+      // originals are archived and then physically purged below, so a lossy
+      // stand-in would destroy more than it preserves.
+      // Accept only a string. A non-string would be coerced by normalizeContent,
+      // pass the emptiness check, and then the originals would be archived in
+      // favour of garbage.
+      const content = typeof summary === "string" ? normalizeContent(summary) : "";
+      if (!content) {
+        stats.skippedGroups++;
+        logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
+        abandoned = true;
+        continue;
+      }
+      // Output acceptance. A reply that is a refusal, a meta-comment, a question,
+      // or has no content in common with what it summarised is not a memory. The
+      // batch is left untouched — nothing written, nothing archived — so the rows
+      // come back next night instead of being replaced by noise.
+      const verdict = acceptSummary(content, texts);
+      if (!verdict.ok) {
+        stats.rejectedGroups++;
+        stats.rejections.push({ entity, roleId, reason: verdict.reason, chars: Array.from(content).length });
+        stats.skippedGroups++;
+        logger?.warn?.(`dsh-xiaofei-memory: distillation rejected "${entity}" (${ids.length} memories): ${verdict.reason}`);
+        // One refusal usually means the rest of the group gets the same answer;
+        // stop rather than burn the remaining calls.
+        abandoned = true;
+        continue;
+      }
+
+      // One batch is one unit: summary row + archives commit together, so an
+      // exception cannot leave a summary written while its originals survive
+      // (duplicates) or originals archived with no summary (loss).
+      const res = withTransaction(db, () => {
+        const written = addMemory(db, {
+          roleId,
+          layer: "core",
+          content: verdict.text,
+          entities: Array.from(new Set(batch.flatMap((m) => m.entities ?? []))).slice(0, 16),
+          originIds: ids,
+          strength: 1.0,
+          // The summary must be its own row: merging it into a row from `ids`
+          // used to hand back that id, which the archive loop then archived and
+          // purged.
+          noMerge: true,
+        });
+        for (const id of ids) {
+          // Never distil away the seeded soul memories, and never archive the row
+          // the summary landed in (only reachable if `noMerge` is ever lost).
+          if (isSeedMemoryId(id) || id === written?.id) continue;
+          archiveMemory(db, id);
+          archivedIds.add(id);
+          stats.archived++;
+        }
+        return written;
+      });
+      batchesUsed++;
+      stats.distilledGroups++;
+      stats.distilledMemories += ids.length;
+      stats.details.push({
+        roleId,
+        entity,
+        count: ids.length,
+        summary: verdict.text.slice(0, SUMMARY_MAX_CHARS),
+        newId: res?.id ?? null,
+        merged: res?.merged ?? false,
+      });
+      logger?.info?.(
+        `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${verdict.text.slice(0, 60)}`
+      );
+    }
   }
 
   // Reclaim physical space for archived/soft-deleted rows.

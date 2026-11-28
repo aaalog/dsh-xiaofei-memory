@@ -186,15 +186,21 @@ console.log("== 3c. distillation archives only what the summariser saw ==");
     ins.run(id, `关于同一个主题的第${i}条独立记录，内容互不相同以便不被合并处理。`, JSON.stringify(["共同主题"]), Date.now() - i * 1000);
     insEnt.run("共同主题", id);
   }
-  let fed = 0;
+  // Batched now: a twenty-row group is summarised eight at a time, and the
+  // trailing four are too small to be their own group, so they wait. Every
+  // summary must still match exactly the rows archived with it.
+  const fedSizes = [];
   const stats = await runNightlySleep(db8, {
-    summarize: async (texts) => { fed = texts.length; return "合并要点：" + texts[0].slice(0, 40); },
+    summarize: async (texts) => { fedSizes.push(texts.length); return "合并要点：" + texts[0].slice(0, 40); },
   });
-  check("summariser receives at most 8 rows", fed <= 8, `fed=${fed}`);
-  check("archived count equals what was summarised", stats.archived === fed, `archived=${stats.archived} fed=${fed}`);
+  check("no batch exceeds 8 rows", fedSizes.every((n) => n <= 8), JSON.stringify(fedSizes));
+  const fedTotal = fedSizes.reduce((a, b) => a + b, 0);
+  check("archived count equals what was summarised", stats.archived === fedTotal, `archived=${stats.archived} fed=${fedTotal}`);
+  check("a twenty-row group is processed in batches", stats.distilledGroups >= 2, `groups=${stats.distilledGroups} sizes=${JSON.stringify(fedSizes)}`);
   // Count only this fixture's rows: the seeds live in `recent` too.
   const still = db8.prepare("SELECT COUNT(*) n FROM memories WHERE layer='recent' AND status='active' AND id LIKE 'many\_%' ESCAPE '\\'").get().n;
-  check("the rest stay in the layer for the next pass", still === 20 - fed, `left=${still} expected=${20 - fed}`);
+  check("leftovers stay in the layer for the next pass", still === 20 - fedTotal, `left=${still} expected=${20 - fedTotal}`);
+  check("the leftover is below the batch floor, not lost", 20 - fedTotal < 5, `left=${20 - fedTotal}`);
   closeMemoryDb(db8);
   try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
 }

@@ -22,9 +22,12 @@ sees on every turn.
 - **The ten seed memories are unpinned.** They remain active, unchanged and
   retrievable; one derived row, `mem_soul_digest`, represents them in the block.
   The unpinning runs once behind `meta.seedPinnedMigrated`.
-- **Distillation archives only what it summarised** (at most eight rows per
-  group). The remainder stays in the layer for the next night instead of being
-  archived and purged unread.
+- **Distillation archives only what it summarised**, and a qualifying group is
+  now processed in batches of eight rather than one slice: the threshold is
+  absolute, so a group of ten to seventeen used to be distilled once and leave
+  two to nine rows stranded below the threshold for ever. At most four batches
+  per night; a trailing batch under five rows waits for more instead of becoming
+  a permanent fragment.
 - **A differing key token no longer retires a row.** Filenames, URLs and numbers
   are compared: a difference means a *different fact*, so the rows coexist. The
   previous release retired the older row, which ate parallel facts and numbered

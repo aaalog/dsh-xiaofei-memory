@@ -1480,6 +1480,10 @@ async function runNightlySleep(db, {
       }
     }
     const archivedIds = /* @__PURE__ */ new Set();
+    const BATCH = 8;
+    const MAX_BATCHES_PER_PASS = 4;
+    const MIN_BATCH = 5;
+    let batchesUsed = 0;
     for (const { roleId, entity, memories } of groups.values()) {
       const unique = Array.from(new Map(memories.map((m) => [m.id, m])).values()).filter((m) => !archivedIds.has(m.id));
       if (unique.length <= threshold) {
@@ -1490,63 +1494,75 @@ async function runNightlySleep(db, {
         stats2.skippedEntities++;
         continue;
       }
-      const summarised = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0)).slice(0, 8);
-      const ids = summarised.map((m) => m.id);
-      const texts = summarised.map((m) => m.content);
-      let summary = null;
-      if (typeof summarize === "function") {
+      const sorted = unique.slice().sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0));
+      let abandoned = false;
+      for (let offset = 0; offset < sorted.length && !abandoned; offset += BATCH) {
+        if (batchesUsed >= MAX_BATCHES_PER_PASS) {
+          stats2.batchesDeferred = (stats2.batchesDeferred ?? 0) + 1;
+          break;
+        }
+        const batch = sorted.slice(offset, offset + BATCH);
+        const trailing = offset + BATCH >= sorted.length;
+        if (trailing && offset > 0 && batch.length < MIN_BATCH) break;
+        const ids = batch.map((m) => m.id);
+        const texts = batch.map((m) => m.content);
+        let summary = null;
         try {
           summary = await summarize(texts);
         } catch {
         }
-      }
-      const content = typeof summary === "string" ? normalizeContent(summary) : "";
-      if (!content) {
-        stats2.skippedGroups++;
-        logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
-        continue;
-      }
-      const verdict = acceptSummary(content, texts);
-      if (!verdict.ok) {
-        stats2.rejectedGroups++;
-        stats2.rejections.push({ entity, roleId, reason: verdict.reason, chars: Array.from(content).length });
-        stats2.skippedGroups++;
-        logger?.warn?.(`dsh-xiaofei-memory: distillation rejected "${entity}" (${ids.length} memories): ${verdict.reason}`);
-        continue;
-      }
-      const res = withTransaction(db, () => {
-        const written = addMemory(db, {
-          roleId,
-          layer: "core",
-          content: verdict.text,
-          entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
-          originIds: ids,
-          strength: 1,
-          // The summary must be its own row: merging it into a row from `ids` used
-          // to hand back that id, which the archive loop then archived and purged.
-          noMerge: true
-        });
-        for (const id of ids) {
-          if (isSeedMemoryId(id) || id === written?.id) continue;
-          archiveMemory(db, id);
-          archivedIds.add(id);
-          stats2.archived++;
+        const content = typeof summary === "string" ? normalizeContent(summary) : "";
+        if (!content) {
+          stats2.skippedGroups++;
+          logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
+          abandoned = true;
+          continue;
         }
-        return written;
-      });
-      stats2.distilledGroups++;
-      stats2.distilledMemories += ids.length;
-      stats2.details.push({
-        roleId,
-        entity,
-        count: ids.length,
-        summary: content.slice(0, SUMMARY_MAX_CHARS),
-        newId: res?.id ?? null,
-        merged: res?.merged ?? false
-      });
-      logger?.info?.(
-        `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${content.slice(0, 60)}`
-      );
+        const verdict = acceptSummary(content, texts);
+        if (!verdict.ok) {
+          stats2.rejectedGroups++;
+          stats2.rejections.push({ entity, roleId, reason: verdict.reason, chars: Array.from(content).length });
+          stats2.skippedGroups++;
+          logger?.warn?.(`dsh-xiaofei-memory: distillation rejected "${entity}" (${ids.length} memories): ${verdict.reason}`);
+          abandoned = true;
+          continue;
+        }
+        const res = withTransaction(db, () => {
+          const written = addMemory(db, {
+            roleId,
+            layer: "core",
+            content: verdict.text,
+            entities: Array.from(new Set(batch.flatMap((m) => m.entities ?? []))).slice(0, 16),
+            originIds: ids,
+            strength: 1,
+            // The summary must be its own row: merging it into a row from `ids`
+            // used to hand back that id, which the archive loop then archived and
+            // purged.
+            noMerge: true
+          });
+          for (const id of ids) {
+            if (isSeedMemoryId(id) || id === written?.id) continue;
+            archiveMemory(db, id);
+            archivedIds.add(id);
+            stats2.archived++;
+          }
+          return written;
+        });
+        batchesUsed++;
+        stats2.distilledGroups++;
+        stats2.distilledMemories += ids.length;
+        stats2.details.push({
+          roleId,
+          entity,
+          count: ids.length,
+          summary: verdict.text.slice(0, SUMMARY_MAX_CHARS),
+          newId: res?.id ?? null,
+          merged: res?.merged ?? false
+        });
+        logger?.info?.(
+          `dsh-xiaofei-memory: distilled "${entity}" (${ids.length} memories -> ${res?.merged ? "merged" : "new"} ${String(res?.id ?? "?").slice(-6)}): ${verdict.text.slice(0, 60)}`
+        );
+      }
     }
     purgeArchived(db, archiveRetentionMs === void 0 ? {} : { retentionMs: archiveRetentionMs });
     vacuumAndOptimize(db);
@@ -2259,7 +2275,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128091236" : "dev";
+var BUILD_STAMP = true ? "20261128093913" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
