@@ -500,6 +500,10 @@ function closeMemoryDb(db) {
   } catch {
   }
 }
+function countLayerActive(db, layer) {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE status = 'active' AND layer = ?").get(layer);
+  return row ? row.n : 0;
+}
 function countMemories(db) {
   const row = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE status = 'active'").get();
   return row ? row.n : 0;
@@ -1601,6 +1605,19 @@ function detectCorrection(text) {
   return { hit: false };
 }
 
+// src/sleep-trigger.js
+function watermarkReached({ recent, watermark, lastAt, now: now2, minIntervalMs }) {
+  const rows = Number(recent);
+  const mark = Number(watermark);
+  if (!Number.isFinite(mark) || mark <= 0) return false;
+  if (!Number.isFinite(rows) || rows < mark) return false;
+  const interval = Number(minIntervalMs);
+  const minInterval = Number.isFinite(interval) && interval > 0 ? interval : 6 * 60 * 60 * 1e3;
+  const last = Number(lastAt);
+  if (last > 0 && Number(now2) - last < minInterval) return false;
+  return true;
+}
+
 // src/core-memory.js
 import { createHash } from "node:crypto";
 
@@ -2220,6 +2237,15 @@ var Config = z.object({
    */
   archiveRetentionDays: z.number().default(7).volatile(),
   sleepTimeHour: z.number().default(3).volatile(),
+  /**
+   * Recent-layer size that queues a distillation pass right after a capture.
+   * The clock-based pass stays as a fallback; this is what makes the metabolism
+   * follow the machine's actual use instead of waiting for an hour it may sleep
+   * through.
+   */
+  sleepWatermark: z.number().default(50).volatile(),
+  /** Minimum time between two queued passes, to stop a busy day from hammering. */
+  sleepMinIntervalMs: z.number().default(6 * 60 * 60 * 1e3).volatile(),
   /** Max tokens for a single recall injection (PRD 4.2). */
   maxRecallTokens: z.number().default(1200),
   /** Default role namespace when the session carries none. */
@@ -2270,7 +2296,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128103027" : "dev";
+var BUILD_STAMP = true ? "20261128103501" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2327,10 +2353,17 @@ async function apply(ctx, config) {
   const feedback = new FeedbackManager({ db, dampFactor: config.dampFactor, logger });
   let liveRoles = Array.isArray(config.roles) ? config.roles.map((r) => ({ ...r })) : [];
   const sessionRole = /* @__PURE__ */ new Map();
+  let maybeTriggerSleep = () => {
+  };
   const tracker = new CaptureTracker({
     // A disabled role stops accepting captures. Silently dropping is right
     // here: the alternative is storing memories the owner asked not to keep.
-    store: (args) => isRoleEnabled(liveRoles, args?.roleId) ? addMemory(db, args) : null,
+    store: (args) => {
+      if (!isRoleEnabled(liveRoles, args?.roleId)) return null;
+      const written = addMemory(db, args);
+      if (written) maybeTriggerSleep();
+      return written;
+    },
     roleOf: (sid) => sessionRole.get(sid) ?? config.roleId,
     logger,
     extractor: config.useLlmExtraction ? makeLlmExtractor(buildLlmCaller(ctx), { model: config.extractionModel }) : null
@@ -2484,6 +2517,30 @@ async function apply(ctx, config) {
         logger?.warn?.(`dsh-xiaofei-memory: nightly sleep failed: ${e?.message ?? e}`);
       } catch {
       }
+    }
+  };
+  let sleepQueued = false;
+  maybeTriggerSleep = () => {
+    try {
+      if (!config.enabled) return;
+      const recent = countLayerActive(db, "recent");
+      const now2 = Date.now();
+      const last = Number(metaGet(db, LAST_SLEEP_KEY) ?? 0);
+      if (!watermarkReached({
+        recent,
+        watermark: config.sleepWatermark,
+        lastAt: last,
+        now: now2,
+        minIntervalMs: config.sleepMinIntervalMs
+      })) return;
+      if (sleepQueued) return;
+      sleepQueued = true;
+      queueMicrotask(() => {
+        sleepQueued = false;
+        void doSleep();
+      });
+      logger?.info?.(`dsh-xiaofei-memory: recent layer reached ${recent}; queued a distillation pass`);
+    } catch {
     }
   };
   const lastSleep = Number(metaGet(db, LAST_SLEEP_KEY) ?? 0);

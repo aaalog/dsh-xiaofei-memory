@@ -304,6 +304,11 @@ export function closeMemoryDb(db) {
 }
 
 /** Count of active memories. */
+export function countLayerActive(db, layer) {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE status = 'active' AND layer = ?").get(layer);
+  return row ? row.n : 0;
+}
+
 export function countMemories(db) {
   const row = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE status = 'active'").get();
   return row ? row.n : 0;

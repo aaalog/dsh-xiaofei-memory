@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 
-import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction, restoreMemory, archiveMemory, isSeedMemoryId, updateMemoryText, SOUL_DIGEST_ID, searchMemories } from "./db.js";
+import { openMemoryDb, closeMemoryDb, countMemories, countLayerActive, addMemory, metaGet, metaSet, touchAccessed, withTransaction, restoreMemory, archiveMemory, isSeedMemoryId, updateMemoryText, SOUL_DIGEST_ID, searchMemories } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
 import { isRoleEnabled, roleIdsForAgent } from "./roles.js";
 import { claimLease, releaseLease } from "./lease.js";
@@ -16,6 +16,7 @@ import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
 import { detectCorrection } from "./correction.js";
+import { watermarkReached } from "./sleep-trigger.js";
 import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories, previewCoreMemory, getMemoryGraph, recordSleepRun, getSleepLog } from "./console.js";
 import { registerCoreMemory } from "./core-memory.js";
 import { resolveMemoryRef, shortMemoryId } from "./memory-index.js";
@@ -78,6 +79,15 @@ export const Config = z.object({
    */
   archiveRetentionDays: z.number().default(7).volatile(),
   sleepTimeHour: z.number().default(3).volatile(),
+  /**
+   * Recent-layer size that queues a distillation pass right after a capture.
+   * The clock-based pass stays as a fallback; this is what makes the metabolism
+   * follow the machine's actual use instead of waiting for an hour it may sleep
+   * through.
+   */
+  sleepWatermark: z.number().default(50).volatile(),
+  /** Minimum time between two queued passes, to stop a busy day from hammering. */
+  sleepMinIntervalMs: z.number().default(6 * 60 * 60 * 1000).volatile(),
   /** Max tokens for a single recall injection (PRD 4.2). */
   maxRecallTokens: z.number().default(1200),
   /** Default role namespace when the session carries none. */
@@ -217,10 +227,18 @@ export async function apply(ctx, config) {
   // Write-side role isolation: a captured memory must land in the role
   // namespace of the session it came from, not in the global default.
   const sessionRole = new Map(); // sessionId -> roleId
+  // Reassigned after `doSleep` exists; the capture path calls it lazily.
+  let maybeTriggerSleep = () => {};
+
   const tracker = new CaptureTracker({
     // A disabled role stops accepting captures. Silently dropping is right
     // here: the alternative is storing memories the owner asked not to keep.
-    store: (args) => (isRoleEnabled(liveRoles, args?.roleId) ? addMemory(db, args) : null),
+    store: (args) => {
+      if (!isRoleEnabled(liveRoles, args?.roleId)) return null;
+      const written = addMemory(db, args);
+      if (written) maybeTriggerSleep();
+      return written;
+    },
     roleOf: (sid) => sessionRole.get(sid) ?? config.roleId,
     logger,
     extractor: config.useLlmExtraction
@@ -420,6 +438,31 @@ export async function apply(ctx, config) {
     } catch (e) {
       try { logger?.warn?.(`dsh-xiaofei-memory: nightly sleep failed: ${e?.message ?? e}`); } catch { /* ignore */ }
     }
+  };
+
+  // Watermark: a capture that fills the recent layer queues a pass now.
+  let sleepQueued = false;
+  maybeTriggerSleep = () => {
+    try {
+      if (!config.enabled) return;
+      const recent = countLayerActive(db, "recent");
+      const now = Date.now();
+      const last = Number(metaGet(db, LAST_SLEEP_KEY) ?? 0);
+      if (!watermarkReached({
+        recent,
+        watermark: config.sleepWatermark,
+        lastAt: last,
+        now,
+        minIntervalMs: config.sleepMinIntervalMs,
+      })) return;
+      if (sleepQueued) return;
+      sleepQueued = true;
+      queueMicrotask(() => {
+        sleepQueued = false;
+        void doSleep();
+      });
+      logger?.info?.(`dsh-xiaofei-memory: recent layer reached ${recent}; queued a distillation pass`);
+    } catch { /* never block a turn */ }
   };
 
   // Compensation: run sleep on startup if it's been >24h since the last pass.

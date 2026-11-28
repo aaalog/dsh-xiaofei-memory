@@ -10,6 +10,7 @@ import { isRoleEnabled, roleIdsForAgent } from "./src/roles.js";
 import { claimLease, releaseLease } from "./src/lease.js";
 import { buildLlmCaller, resolveModelRoute, providerIdOf } from "./src/llm-call.js";
 import { detectCorrection } from "./src/correction.js";
+import { watermarkReached } from "./src/sleep-trigger.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rmSync, mkdtempSync } from "node:fs";
@@ -701,6 +702,23 @@ console.log("== 7q. editing a memory keeps it the same memory ==");
   updateMemoryText(db, made.id, "长".repeat(500));
   const capped = db.prepare("SELECT length(content) n FROM memories WHERE id=?").get(made.id).n;
   check("an edit is capped like a write", capped <= 401, `len=${capped}`);
+}
+
+console.log("== 7r. the pass fires on a watermark, not just the clock ==");
+{
+  const H = 3600 * 1000;
+  check("below the watermark stays quiet",
+    watermarkReached({ recent: 49, watermark: 50, lastAt: 0, now: 1000, minIntervalMs: 6 * H }) === false);
+  check("reaching the watermark triggers on the first pass",
+    watermarkReached({ recent: 50, watermark: 50, lastAt: 0, now: 1000, minIntervalMs: 6 * H }) === true);
+  check("a too-recent pass defers",
+    watermarkReached({ recent: 80, watermark: 50, lastAt: 1000, now: 1000 + 5 * H, minIntervalMs: 6 * H }) === false);
+  check("a stale pass triggers again",
+    watermarkReached({ recent: 80, watermark: 50, lastAt: 1000, now: 1000 + 7 * H, minIntervalMs: 6 * H }) === true);
+  check("a non-positive watermark disables the trigger",
+    watermarkReached({ recent: 100, watermark: 0, lastAt: 0, now: 1000, minIntervalMs: 6 * H }) === false);
+  check("a garbage interval falls back to six hours",
+    watermarkReached({ recent: 80, watermark: 50, lastAt: 1000, now: 1000 + 5 * H, minIntervalMs: 0 }) === false);
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");

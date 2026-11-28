@@ -85,6 +85,11 @@ sees on every turn.
 - **Volatile settings are unwrapped generically.** A hand-written key list let
   `extractionProvider` reach the model adapter as `"[object Object]"` and made
   `enableSleepSummarizer` truthy whether it was true or false.
+- **Watermark-triggered metabolism.** The pass no longer waits for its one
+  scheduled hour: when the recent layer reaches `sleepWatermark` (default 50) a
+  distillation is queued right after the capture that filled it, debounced by
+  `sleepMinIntervalMs`. The clock pass remains as a fallback for vacuum and
+  expired-archive cleanup.
 - **The LLM caller speaks the service's actual API.** The host `llm` service
   exposes `stream()`, not `complete()`; the caller looked only for `complete` and
   returned null when it was missing, so capture extraction and the nightly

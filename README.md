@@ -118,7 +118,9 @@
 | `recallLimit` | `8` | 主检索条数 |
 | `recallMinSim` | `0.3` | 相关性地板 |
 | `enableGraphRecall` | `true` | 图谱 1 跳扩散 |
-| `sleepTimeHour` | `3` | 夜间代谢小时 |
+| `sleepTimeHour` | `3` | 定时代谢小时（兜底：vacuum + 清过期归档） |
+| `sleepWatermark` | `50` | recent 层达到该数量即在捕获后**立即排队**蒸馏 |
+| `sleepMinIntervalMs` | `6h` | 两次排队蒸馏的最小间隔（防抖） |
 | `archiveRetentionDays` | `7` | 退休记忆保留天数（非法值回落 7，不会变成立即删除） |
 | `dampFactor` | `0.85` | 纠错阻尼 |
 | `timeDecayFactor` | `0.01` | 时间衰减 |
