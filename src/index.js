@@ -182,10 +182,17 @@ function defaultDbPath() {
 export async function apply(ctx, config) {
   // Unwrap schemastery `.volatile()` accessors (settings-editable fields) into
   // plain values so the rest of the engine can read them normally.
-  for (const k of ["roles", "sleepTimeHour", "extractionModel"]) {
-    const v = config[k];
-    if (v && typeof v === "object" && typeof v.get === "function") {
-      try { config[k] = v.get(); } catch { /* keep the accessor if frozen */ }
+  //
+  // Every key is visited rather than a hand-written list. The list rotted: when
+  // `extractionProvider` was added it stayed an accessor object and reached the
+  // model adapter as the string "[object Object]" (NO_ADAPTER), while
+  // `enableSleepSummarizer` stayed permanently truthy — false and true were the
+  // same value — and `archiveRetentionDays` produced NaN. A future field cannot
+  // reintroduce the bug this way.
+  for (const key of Object.keys(config)) {
+    const value = config[key];
+    if (value && typeof value === "object" && typeof value.get === "function") {
+      try { config[key] = value.get(); } catch { /* keep the accessor if frozen */ }
     }
   }
   if (!config.enabled) {

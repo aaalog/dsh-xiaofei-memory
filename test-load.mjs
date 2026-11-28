@@ -39,7 +39,19 @@ const cfg = mod.Config({
 check("config parses with defaults", cfg.enabled === true && cfg.dampFactor === 0.85);
 check("config uses provided dbPath", cfg.dbPath.includes("memory.sqlite"));
 
+// A volatile setting arrives as an accessor object. apply() must unwrap every
+// one of them: a hand-written list let `extractionProvider` reach the model
+// adapter as "[object Object]" and made `enableSleepSummarizer` permanently
+// truthy. Simulate the accessor shape on two fields that were NOT in the old
+// list, then check both are plain values afterwards.
+cfg.extractionProvider = { get: () => "dai-deepseek", value: "dai-deepseek" };
+cfg.enableSleepSummarizer = { get: () => false, value: false };
+
 await mod.apply(ctx, cfg);
+
+check("wraps every volatile accessor, not a fixed list",
+  cfg.extractionProvider === "dai-deepseek" && cfg.enableSleepSummarizer === false,
+  JSON.stringify({ provider: cfg.extractionProvider, summarizer: cfg.enableSleepSummarizer }));
 check("registered agent/pre-step handler", handlers.has("agent/pre-step"));
 check("registered session/event handler", handlers.has("session/event"));
 check("registered tools/result handler (correction)", handlers.has("tools/result"));

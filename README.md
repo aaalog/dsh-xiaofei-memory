@@ -92,6 +92,7 @@
 | `roles` | 3 个内置 | `[{id,name,description,enabled}]`；`enabled:false` 会**真正停用**该命名空间 |
 | `useLlmExtraction` | `false` | 启用 LLM **捕获抽取**（每轮一次模型调用）；同时隐含开启蒸馏总结器 |
 | `enableSleepSummarizer` | `false` | **只**开启夜间蒸馏总结器，不影响每轮捕获 |
+| `extractionProvider` | 空 | 显式指定 provider 路由；空 = 自动发现声明该模型的第一个 provider |
 | `extractionModel` | `deepseek-chat` | 抽取/蒸馏共用模型名 |
 | `enableCoreMemory` | `true` | 常驻身份块 |
 | `coreMemoryMaxTokens` | `650` | 常驻块 token 预算 |

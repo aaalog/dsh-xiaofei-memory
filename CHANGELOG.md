@@ -60,6 +60,10 @@ sees on every turn.
 - **`enableSleepSummarizer`**: the nightly summariser no longer requires
   `useLlmExtraction`, which also sends every captured turn through the model.
   Distillation needs one call per group at 03:00, not a per-turn cost.
+- **`extractionProvider`**: pin the provider route instead of discovering it.
+- **Volatile settings are unwrapped generically.** A hand-written key list let
+  `extractionProvider` reach the model adapter as `"[object Object]"` and made
+  `enableSleepSummarizer` truthy whether it was true or false.
 - **The LLM caller speaks the service's actual API.** The host `llm` service
   exposes `stream()`, not `complete()`; the caller looked only for `complete` and
   returned null when it was missing, so capture extraction and the nightly
