@@ -1,5 +1,5 @@
 // test-engine.mjs — verify dsh-xiaofei-memory engine modules against PRD acceptance.
-import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet, getMemory, purgeArchived, archiveMemory, restoreMemory } from "./src/db.js";
+import { openMemoryDb, closeMemoryDb, addMemory, searchMemories, graphExpand, countMemories, metaGet, metaSet, getMemory, purgeArchived, archiveMemory, restoreMemory, updateMemoryText } from "./src/db.js";
 import { retrieveForPrompt } from "./src/retrieval.js";
 import { CaptureTracker } from "./src/capture.js";
 import { FeedbackManager } from "./src/feedback.js";
@@ -667,6 +667,40 @@ console.log("== 7p. the LLM caller speaks the service's actual API ==");
   const emptyProviders = { async listProviders() { return []; }, stream() {} };
   await buildLlmCaller({ get: () => emptyProviders }, { onError: (r) => unrouted.push(r) })("x", { model: "m" });
   check("no provider routes reports no-route", /no-route/.test(unrouted[0] ?? ""), JSON.stringify(unrouted));
+}
+
+console.log("== 7q. editing a memory keeps it the same memory ==");
+{
+  const role = "edit-role";
+  const made = addMemory(db, {
+    roleId: role, layer: "weekly", content: "旧的写法：规则在 Product.php 里",
+    entities: ["Product.php"],
+  });
+  const before = db.prepare("SELECT id, created_at, origin_ids, entities FROM memories WHERE id=?").get(made.id);
+
+  const res = updateMemoryText(db, made.id, "新的写法：规则在 Search.php 里，按供应商维度叠加");
+  check("an edit reports success", res.ok === true, JSON.stringify(res));
+  const after = db.prepare("SELECT content, created_at, origin_ids, entities FROM memories WHERE id=?").get(made.id);
+  check("the text is replaced", after.content.includes("Search.php"), String(after.content));
+  // Deleting and re-adding would lose all three of these.
+  check("the row id is unchanged", db.prepare("SELECT id FROM memories WHERE id=?").get(made.id)?.id === made.id);
+  check("created_at is unchanged", after.created_at === before.created_at, `${before.created_at} -> ${after.created_at}`);
+  check("origin_ids are unchanged", after.origin_ids === before.origin_ids, `${before.origin_ids} -> ${after.origin_ids}`);
+  check("the entity index follows the new text",
+    db.prepare("SELECT COUNT(*) n FROM entity_index WHERE memory_id=? AND entity LIKE '%Search%'").get(made.id).n > 0,
+    after.entities);
+
+  check("an unknown id is refused", updateMemoryText(db, "mem_nope", "x").ok === false);
+  check("empty content is refused", updateMemoryText(db, made.id, "   ").ok === false);
+
+  // The same scrub and cap as a fresh write.
+  updateMemoryText(db, made.id, "投递密码是123123，记得改");
+  const scrubbed = db.prepare("SELECT content FROM memories WHERE id=?").get(made.id).content;
+  check("an edit is scrubbed like a write", !scrubbed.includes("123123"), scrubbed);
+
+  updateMemoryText(db, made.id, "长".repeat(500));
+  const capped = db.prepare("SELECT length(content) n FROM memories WHERE id=?").get(made.id).n;
+  check("an edit is capped like a write", capped <= 401, `len=${capped}`);
 }
 
 console.log("== 8. Performance (PRD acceptance #4) ==");

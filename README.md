@@ -132,6 +132,8 @@
 | `memory_core_add_fact` | 写入事实；`layer:"core"` 时自动 `pinned`，进入常驻块 |
 | `memory_core_read` | 按 id 读全文；命中已归档行时提示「被谁取代」并给出恢复方式 |
 | `memory_core_restore` | 恢复保留期内被归档的记忆 |
+| `memory_core_forget` | **两步**：先 `query` 预览将影响的行，再带 `ids` + `confirm:true` 归档；种子与身份摘要拒删 |
+| `memory_core_update` | 改写正文，保持同一条记忆（id / `created_at` / `origin_ids` 不变），同样脱敏与 400 字上限 |
 
 写工具会校验调用方命名空间：只能写自己的角色或 `global`，停用角色拒写。
 

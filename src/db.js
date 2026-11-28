@@ -4,19 +4,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import {
-  newId,
-  now,
-  timeDecay,
-  similarity,
-  queryCoverage,
-  parseJsonList,
-  toJsonList,
-  normalizeContent,
-  clamp,
-  scrubSecrets,
-  MAX_MEMORY_CHARS,
-} from "./util.js";
+import { newId, now, timeDecay, similarity, queryCoverage, parseJsonList, toJsonList, normalizeContent, clamp, scrubSecrets, MAX_MEMORY_CHARS, extractEntities } from "./util.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -118,7 +106,7 @@ const SEED_STRENGTH = { core: 1.0, weekly: 0.9, recent: 0.8 };
  * Its `origin_ids` is deliberately NULL: that column marks distillation output,
  * and a non-null value here would be counted as a summary by sleep bookkeeping.
  */
-const SOUL_DIGEST_ID = "mem_soul_digest";
+export const SOUL_DIGEST_ID = "mem_soul_digest";
 const SOUL_DIGEST_VERSION = 1;
 const SOUL_DIGEST_ROLE = "global";
 const SOUL_DIGEST =
@@ -558,6 +546,32 @@ export function archiveMemory(db, id, { supersededBy = null } = {}) {
 }
 
 /** Touch last_accessed. */
+/**
+ * Replace a memory's text in place, keeping its identity.
+ *
+ * Deleting and re-adding would work but loses the row id, its origin_ids (the
+ * distillation provenance), and its created_at — the three things that make a
+ * memory the same memory after an edit. The text goes through the same scrub and
+ * length cap as a fresh write, and the entity index is rebuilt from the new text.
+ *
+ * @returns {{ ok: boolean, reason?: string, content?: string }}
+ */
+export function updateMemoryText(db, id, content) {
+  const row = db.prepare("SELECT id, content FROM memories WHERE id = ?").get(id);
+  if (!row) return { ok: false, reason: "not-found" };
+
+  let text = scrubSecrets(normalizeContent(content));
+  if (!text) return { ok: false, reason: "empty" };
+  if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "…";
+
+  const entities = toJsonList(sanitizeEntities(extractEntities(text)));
+  return withTransaction(db, () => {
+    db.prepare("UPDATE memories SET content = ?, entities = ? WHERE id = ?").run(text, entities, id);
+    replaceEntities(db, id, sanitizeEntities(extractEntities(text)), text);
+    return { ok: true, content: text };
+  });
+}
+
 export function touchAccessed(db, id) {
   db.prepare("UPDATE memories SET last_accessed = ? WHERE id = ?").run(now(), id);
 }

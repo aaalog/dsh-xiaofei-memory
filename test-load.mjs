@@ -60,6 +60,10 @@ check("memory-core exposes retrieve/addFact/damp/stats", typeof provided["memory
 check("registered retrieve tool", tools.some((t) => t.name === "memory_core_retrieve"));
 check("registered add_fact tool", tools.some((t) => t.name === "memory_core_add_fact"));
 check("registered restore tool", tools.some((t) => t.name === "memory_core_restore"));
+check("registered forget tool", tools.some((t) => t.name === "memory_core_forget"));
+check("registered update tool", tools.some((t) => t.name === "memory_core_update"));
+check("forget defaults to a preview, not a delete",
+  tools.find((t) => t.name === "memory_core_forget")?.parameters?.properties?.confirm?.type === "boolean");
 check("memory-core stats seeded", provided["memory-core"]?.stats()?.active === 11, `active=${provided["memory-core"]?.stats()?.active}`); // 10 seeds + derived soul digest
 
 // Exercise memory-core API.

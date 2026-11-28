@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 
-import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction, restoreMemory } from "./db.js";
+import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction, restoreMemory, archiveMemory, isSeedMemoryId, updateMemoryText, SOUL_DIGEST_ID } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
 import { isRoleEnabled, roleIdsForAgent } from "./roles.js";
 import { claimLease, releaseLease } from "./lease.js";
@@ -902,12 +902,171 @@ export async function apply(ctx, config) {
     },
   });
 
+  const disposeForget = ctx.tools.register({
+    name: "memory_core_forget",
+    description: "遗忘一条或多条长期记忆。默认只列出将受影响的行（dryRun），确认后才归档；归档在保留期内可恢复。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", description: "按关键词查找要遗忘的记忆（dryRun 阶段用）。" },
+        ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "要遗忘的记忆 id 列表。第一段 dryRun 会返回它们；确认时传回同一批。",
+        },
+        confirm: { type: "boolean", description: "true 才真正归档。缺省 false = 只预览。" },
+        limit: { type: "number", description: "dryRun 最多列出几条，默认 5。" },
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          dryRun: { type: "boolean" },
+          reason: { type: "string" },
+          archived: { type: "array", items: { type: "string" } },
+          matches: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                short: { type: "string" },
+                layer: { type: "string" },
+                roleId: { type: "string" },
+                preview: { type: "string" },
+              },
+            },
+          },
+          skipped: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: { id: { type: "string" }, reason: { type: "string" } },
+            },
+          },
+        },
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.dryRun
+          ? (v.matches?.length
+            ? `将要遗忘 ${v.matches.length} 条（尚未执行）：\n${v.matches.map((m) => `- [${m.layer}] ${m.short} ${m.preview}`).join("\n")}\n确认请带 ids 和 confirm:true 再调一次。`
+            : "没有匹配到记忆。")
+          : v?.ok
+            ? `已归档 ${v.archived?.length ?? 0} 条${v.skipped?.length ? `，跳过 ${v.skipped.length} 条（${v.skipped.map((s) => s.reason).join("/")}）` : ""}。`
+            : `未执行：${v?.reason ?? "未知原因"}`,
+      }],
+    },
+    async execute(args, exec) {
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const ids = Array.isArray(args?.ids) ? args.ids.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
+
+      // Second stage: archive exactly what the preview listed.
+      if (args?.confirm === true) {
+        if (ids.length === 0) return { ok: false, dryRun: false, reason: "ids-required" };
+        const archived = [];
+        const skipped = [];
+        for (const ref of ids) {
+          const row = resolveMemoryRef(db, ref, { roleIds });
+          if (!row) { skipped.push({ id: ref, reason: "not-found" }); continue; }
+          if (isSeedMemoryId(row.id)) { skipped.push({ id: row.id, reason: "seed" }); continue; }
+          if (row.id === SOUL_DIGEST_ID) { skipped.push({ id: row.id, reason: "identity" }); continue; }
+          if (row.status !== "active") { skipped.push({ id: row.id, reason: "already-archived" }); continue; }
+          archiveMemory(db, row.id);
+          archived.push(row.id);
+        }
+        logger?.info?.(`dsh-xiaofei-memory: forget archived ${archived.length}, skipped ${skipped.length}`);
+        return { ok: archived.length > 0, dryRun: false, archived, skipped };
+      }
+
+      // First stage: preview only. Nothing is written.
+      const rows = [];
+      if (ids.length > 0) {
+        for (const ref of ids) {
+          const row = resolveMemoryRef(db, ref, { roleIds });
+          if (row) rows.push(row);
+        }
+      } else {
+        const query = String(args?.query ?? "").trim();
+        if (!query) return { ok: false, dryRun: true, reason: "query-or-ids-required" };
+        const limit = Math.max(1, Math.min(10, Number(args?.limit) || 5));
+        rows.push(...searchMemories(db, query, roleIds, { limit, minSim: 0.2 }));
+      }
+      return {
+        ok: true,
+        dryRun: true,
+        matches: rows.map((r) => ({
+          id: String(r.id),
+          short: shortMemoryId(r.id),
+          layer: String(r.layer ?? ""),
+          roleId: String(r.role_id ?? ""),
+          preview: String(r.content ?? "").slice(0, 80),
+        })),
+      };
+    },
+  });
+
+  const disposeUpdate = ctx.tools.register({
+    name: "memory_core_update",
+    description: "改写一条长期记忆的正文（保持同一条记忆：id、溯源与创建时间不变）。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "content"],
+      properties: {
+        id: { type: "string", description: "记忆 id 或索引里的短 id。" },
+        content: { type: "string", description: "新的正文。" },
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          reason: { type: "string" },
+          content: { type: "string" },
+        },
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok
+          ? `已更新（${String(v.id).slice(-6)}）：${String(v.content ?? "").slice(0, 120)}`
+          : v?.reason === "archived"
+            ? "该记忆已归档，请先 memory_core_restore。"
+            : v?.reason === "not-found"
+              ? "未找到该记忆。"
+              : `未更新：${v?.reason ?? "未知原因"}`,
+      }],
+    },
+    async execute(args, exec) {
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const row = resolveMemoryRef(db, args?.id, { roleIds });
+      if (!row) return { ok: false, reason: "not-found" };
+      if (row.status !== "active") return { ok: false, reason: "archived", id: String(row.id) };
+      const res = updateMemoryText(db, row.id, args?.content);
+      if (!res.ok) return { ok: false, reason: res.reason, id: String(row.id) };
+      return { ok: true, id: String(row.id), content: res.content };
+    },
+  });
+
   // --- Cleanup -----------------------------------------------------------
   ctx.effect(() => () => {
     if (sleepTimer) clearTimeout(sleepTimer);
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
     if (typeof disposeRestore === "function") disposeRestore();
+    if (typeof disposeForget === "function") disposeForget();
+    if (typeof disposeUpdate === "function") disposeUpdate();
     if (typeof disposeAddFact === "function") disposeAddFact();
     if (typeof disposeRead === "function") disposeRead();
     // Unregister per-agent prompt sections before the database goes away, so a

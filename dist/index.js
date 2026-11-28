@@ -638,12 +638,25 @@ function archiveMemory(db, id, { supersededBy = null } = {}) {
     "UPDATE memories SET status = 'archived', archived_at = ?, superseded_by = COALESCE(?, superseded_by) WHERE id = ?"
   ).run(now(), supersededBy, id);
 }
+function updateMemoryText(db, id, content) {
+  const row = db.prepare("SELECT id, content FROM memories WHERE id = ?").get(id);
+  if (!row) return { ok: false, reason: "not-found" };
+  let text = scrubSecrets(normalizeContent(content));
+  if (!text) return { ok: false, reason: "empty" };
+  if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS) + "\u2026";
+  const entities = toJsonList(sanitizeEntities(extractEntities(text)));
+  return withTransaction(db, () => {
+    db.prepare("UPDATE memories SET content = ?, entities = ? WHERE id = ?").run(text, entities, id);
+    replaceEntities(db, id, sanitizeEntities(extractEntities(text)), text);
+    return { ok: true, content: text };
+  });
+}
 function touchAccessed(db, id) {
   db.prepare("UPDATE memories SET last_accessed = ? WHERE id = ?").run(now(), id);
 }
 var MAX_SCORED_CANDIDATES = 4e3;
 var STRENGTH_EXPONENT = 0.5;
-function searchMemories(db, query, roleIds, {
+function searchMemories2(db, query, roleIds, {
   decay = 0.01,
   limit = 8,
   /** Weight of the relevance term (0 = pure strength/decay, 1 = pure relevance). */
@@ -938,7 +951,7 @@ function retrieveForPrompt(db, {
 } = {}) {
   if (!query) return null;
   const introspective = INTROSPECTION_RE.test(query);
-  const primary = searchMemories(db, query, roleIds, {
+  const primary = searchMemories2(db, query, roleIds, {
     decay,
     limit,
     weight,
@@ -2044,7 +2057,7 @@ function getMemoryStats(db) {
 }
 function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }) {
   const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : allRoleIds(db);
-  const rows = searchMemories(db, query, roleIds, { decay, limit });
+  const rows = searchMemories2(db, query, roleIds, { decay, limit });
   return rows.map((r) => ({
     id: r.id,
     roleId: r.role_id,
@@ -2257,7 +2270,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128102012" : "dev";
+var BUILD_STAMP = true ? "20261128102526" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2922,11 +2935,166 @@ async function apply(ctx, config) {
       return { ok: true, id: String(row.id), content: String(row.content ?? "") };
     }
   });
+  const disposeForget = ctx.tools.register({
+    name: "memory_core_forget",
+    description: "\u9057\u5FD8\u4E00\u6761\u6216\u591A\u6761\u957F\u671F\u8BB0\u5FC6\u3002\u9ED8\u8BA4\u53EA\u5217\u51FA\u5C06\u53D7\u5F71\u54CD\u7684\u884C\uFF08dryRun\uFF09\uFF0C\u786E\u8BA4\u540E\u624D\u5F52\u6863\uFF1B\u5F52\u6863\u5728\u4FDD\u7559\u671F\u5185\u53EF\u6062\u590D\u3002",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", description: "\u6309\u5173\u952E\u8BCD\u67E5\u627E\u8981\u9057\u5FD8\u7684\u8BB0\u5FC6\uFF08dryRun \u9636\u6BB5\u7528\uFF09\u3002" },
+        ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "\u8981\u9057\u5FD8\u7684\u8BB0\u5FC6 id \u5217\u8868\u3002\u7B2C\u4E00\u6BB5 dryRun \u4F1A\u8FD4\u56DE\u5B83\u4EEC\uFF1B\u786E\u8BA4\u65F6\u4F20\u56DE\u540C\u4E00\u6279\u3002"
+        },
+        confirm: { type: "boolean", description: "true \u624D\u771F\u6B63\u5F52\u6863\u3002\u7F3A\u7701 false = \u53EA\u9884\u89C8\u3002" },
+        limit: { type: "number", description: "dryRun \u6700\u591A\u5217\u51FA\u51E0\u6761\uFF0C\u9ED8\u8BA4 5\u3002" }
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          dryRun: { type: "boolean" },
+          reason: { type: "string" },
+          archived: { type: "array", items: { type: "string" } },
+          matches: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                short: { type: "string" },
+                layer: { type: "string" },
+                roleId: { type: "string" },
+                preview: { type: "string" }
+              }
+            }
+          },
+          skipped: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: { id: { type: "string" }, reason: { type: "string" } }
+            }
+          }
+        }
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.dryRun ? v.matches?.length ? `\u5C06\u8981\u9057\u5FD8 ${v.matches.length} \u6761\uFF08\u5C1A\u672A\u6267\u884C\uFF09\uFF1A
+${v.matches.map((m) => `- [${m.layer}] ${m.short} ${m.preview}`).join("\n")}
+\u786E\u8BA4\u8BF7\u5E26 ids \u548C confirm:true \u518D\u8C03\u4E00\u6B21\u3002` : "\u6CA1\u6709\u5339\u914D\u5230\u8BB0\u5FC6\u3002" : v?.ok ? `\u5DF2\u5F52\u6863 ${v.archived?.length ?? 0} \u6761${v.skipped?.length ? `\uFF0C\u8DF3\u8FC7 ${v.skipped.length} \u6761\uFF08${v.skipped.map((s) => s.reason).join("/")}\uFF09` : ""}\u3002` : `\u672A\u6267\u884C\uFF1A${v?.reason ?? "\u672A\u77E5\u539F\u56E0"}`
+      }]
+    },
+    async execute(args, exec) {
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const ids = Array.isArray(args?.ids) ? args.ids.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
+      if (args?.confirm === true) {
+        if (ids.length === 0) return { ok: false, dryRun: false, reason: "ids-required" };
+        const archived = [];
+        const skipped = [];
+        for (const ref of ids) {
+          const row = resolveMemoryRef(db, ref, { roleIds });
+          if (!row) {
+            skipped.push({ id: ref, reason: "not-found" });
+            continue;
+          }
+          if (isSeedMemoryId(row.id)) {
+            skipped.push({ id: row.id, reason: "seed" });
+            continue;
+          }
+          if (row.id === SOUL_DIGEST_ID) {
+            skipped.push({ id: row.id, reason: "identity" });
+            continue;
+          }
+          if (row.status !== "active") {
+            skipped.push({ id: row.id, reason: "already-archived" });
+            continue;
+          }
+          archiveMemory(db, row.id);
+          archived.push(row.id);
+        }
+        logger?.info?.(`dsh-xiaofei-memory: forget archived ${archived.length}, skipped ${skipped.length}`);
+        return { ok: archived.length > 0, dryRun: false, archived, skipped };
+      }
+      const rows = [];
+      if (ids.length > 0) {
+        for (const ref of ids) {
+          const row = resolveMemoryRef(db, ref, { roleIds });
+          if (row) rows.push(row);
+        }
+      } else {
+        const query = String(args?.query ?? "").trim();
+        if (!query) return { ok: false, dryRun: true, reason: "query-or-ids-required" };
+        const limit = Math.max(1, Math.min(10, Number(args?.limit) || 5));
+        rows.push(...searchMemories(db, query, roleIds, { limit, minSim: 0.2 }));
+      }
+      return {
+        ok: true,
+        dryRun: true,
+        matches: rows.map((r) => ({
+          id: String(r.id),
+          short: shortMemoryId(r.id),
+          layer: String(r.layer ?? ""),
+          roleId: String(r.role_id ?? ""),
+          preview: String(r.content ?? "").slice(0, 80)
+        }))
+      };
+    }
+  });
+  const disposeUpdate = ctx.tools.register({
+    name: "memory_core_update",
+    description: "\u6539\u5199\u4E00\u6761\u957F\u671F\u8BB0\u5FC6\u7684\u6B63\u6587\uFF08\u4FDD\u6301\u540C\u4E00\u6761\u8BB0\u5FC6\uFF1Aid\u3001\u6EAF\u6E90\u4E0E\u521B\u5EFA\u65F6\u95F4\u4E0D\u53D8\uFF09\u3002",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "content"],
+      properties: {
+        id: { type: "string", description: "\u8BB0\u5FC6 id \u6216\u7D22\u5F15\u91CC\u7684\u77ED id\u3002" },
+        content: { type: "string", description: "\u65B0\u7684\u6B63\u6587\u3002" }
+      }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: {
+          ok: { type: "boolean" },
+          id: { type: "string" },
+          reason: { type: "string" },
+          content: { type: "string" }
+        }
+      },
+      render: (_args, v) => [{
+        type: "text",
+        text: v?.ok ? `\u5DF2\u66F4\u65B0\uFF08${String(v.id).slice(-6)}\uFF09\uFF1A${String(v.content ?? "").slice(0, 120)}` : v?.reason === "archived" ? "\u8BE5\u8BB0\u5FC6\u5DF2\u5F52\u6863\uFF0C\u8BF7\u5148 memory_core_restore\u3002" : v?.reason === "not-found" ? "\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\u3002" : `\u672A\u66F4\u65B0\uFF1A${v?.reason ?? "\u672A\u77E5\u539F\u56E0"}`
+      }]
+    },
+    async execute(args, exec) {
+      const roleIds = roleIdsForAgent(liveRoles, exec?.agent, config.roleId);
+      const row = resolveMemoryRef(db, args?.id, { roleIds });
+      if (!row) return { ok: false, reason: "not-found" };
+      if (row.status !== "active") return { ok: false, reason: "archived", id: String(row.id) };
+      const res = updateMemoryText(db, row.id, args?.content);
+      if (!res.ok) return { ok: false, reason: res.reason, id: String(row.id) };
+      return { ok: true, id: String(row.id), content: res.content };
+    }
+  });
   ctx.effect(() => () => {
     if (sleepTimer) clearTimeout(sleepTimer);
     feedback.dispose();
     if (typeof disposeRetrieve === "function") disposeRetrieve();
     if (typeof disposeRestore === "function") disposeRestore();
+    if (typeof disposeForget === "function") disposeForget();
+    if (typeof disposeUpdate === "function") disposeUpdate();
     if (typeof disposeAddFact === "function") disposeAddFact();
     if (typeof disposeRead === "function") disposeRead();
     try {

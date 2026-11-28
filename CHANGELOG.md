@@ -57,6 +57,14 @@ sees on every turn.
   when missing, so owner edits are never reverted.
 - **Progressive disclosure**: a catalogue section listing memories that did not
   fit, plus `memory_core_read` to pull one back on demand.
+- **`memory_core_forget` and `memory_core_update`**: manage memory from the
+  conversation instead of a panel. Forgetting is two calls — a preview of the
+  rows it would retire, then the same ids with `confirm: true` — because "forget
+  the thing about Zhang San" may match three rows or five, and only the list says
+  which. Seeds and the identity digest are refused; everything is archived, so the
+  retention window still applies. Updating rewrites the text in place, keeping the
+  id, `created_at` and `origin_ids`, with the same scrubbing and length cap as a
+  fresh write.
 - **`memory_core_restore`**, so retiring a memory is reversible from the tools
   rather than only from a SQL prompt; `memory_core_read` now says "archived,
   replaced by X" instead of "not found".
