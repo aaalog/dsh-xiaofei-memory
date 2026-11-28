@@ -656,7 +656,7 @@ function touchAccessed(db, id) {
 }
 var MAX_SCORED_CANDIDATES = 4e3;
 var STRENGTH_EXPONENT = 0.5;
-function searchMemories2(db, query, roleIds, {
+function searchMemories(db, query, roleIds, {
   decay = 0.01,
   limit = 8,
   /** Weight of the relevance term (0 = pure strength/decay, 1 = pure relevance). */
@@ -951,7 +951,7 @@ function retrieveForPrompt(db, {
 } = {}) {
   if (!query) return null;
   const introspective = INTROSPECTION_RE.test(query);
-  const primary = searchMemories2(db, query, roleIds, {
+  const primary = searchMemories(db, query, roleIds, {
     decay,
     limit,
     weight,
@@ -2057,7 +2057,7 @@ function getMemoryStats(db) {
 }
 function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }) {
   const roleIds = roleId && roleId !== "all" ? [roleId, "global"] : allRoleIds(db);
-  const rows = searchMemories2(db, query, roleIds, { decay, limit });
+  const rows = searchMemories(db, query, roleIds, { decay, limit });
   return rows.map((r) => ({
     id: r.id,
     roleId: r.role_id,
@@ -2270,7 +2270,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128102526" : "dev";
+var BUILD_STAMP = true ? "20261128103027" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

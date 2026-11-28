@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import z from "@deepseek-ai/schemastery";
 
-import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction, restoreMemory, archiveMemory, isSeedMemoryId, updateMemoryText, SOUL_DIGEST_ID } from "./db.js";
+import { openMemoryDb, closeMemoryDb, countMemories, addMemory, metaGet, metaSet, touchAccessed, withTransaction, restoreMemory, archiveMemory, isSeedMemoryId, updateMemoryText, SOUL_DIGEST_ID, searchMemories } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
 import { isRoleEnabled, roleIdsForAgent } from "./roles.js";
 import { claimLease, releaseLease } from "./lease.js";
