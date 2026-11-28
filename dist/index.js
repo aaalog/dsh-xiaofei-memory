@@ -1367,6 +1367,60 @@ function distillThreshold(size) {
   const scaled = Math.ceil(size * DISTILL_RATIO);
   return Math.min(DISTILL_MAX_THRESHOLD, Math.max(DISTILL_MIN_THRESHOLD, scaled || DISTILL_MIN_THRESHOLD));
 }
+var REFUSAL_PATTERNS = [
+  /无法(?:准确)?(?:压缩|概括|总结|提炼)/,
+  /(?:建议|请|需要)(?:补充|提供)(?:更)?(?:完整|详细|更多)/,
+  /需要(?:更多|补充).{0,6}(?:信息|上下文|内容)/,
+  /(?:内容|信息)(?:并)?不完整/,
+  /(?:抱歉|对不起)/,
+  /作为(?:一个|一名)?\s*(?:AI|人工智能|语言模型)/i,
+  /(?:i'?m sorry|i am sorry|cannot|can'?t|unable to|as an ai\b)/i
+];
+var META_PATTERNS = [/不超过\s*\d+\s*字/, /压缩成(?:一句|一段)要点/];
+function contentGrams(text) {
+  const s = String(text ?? "");
+  const set = /* @__PURE__ */ new Set();
+  const cjk = s.replace(/[^\u4e00-\u9fa5]/g, "");
+  for (let i = 0; i + 2 <= cjk.length; i++) set.add(cjk.slice(i, i + 2));
+  for (const word of s.toLowerCase().match(/[a-z][a-z0-9_.-]{2,}/g) ?? []) set.add(word);
+  return set;
+}
+function acceptSummary(text, sources, { minChars = 12, maxChars = 120 } = {}) {
+  const raw = String(text ?? "").trim().replace(/^["'“”「」\s]+|["'“”「」\s]+$/g, "");
+  if (!raw) return { ok: false, reason: "empty" };
+  for (const pattern of REFUSAL_PATTERNS) if (pattern.test(raw)) return { ok: false, reason: "refusal" };
+  for (const pattern of META_PATTERNS) if (pattern.test(raw)) return { ok: false, reason: "meta" };
+  if (/[?？]\s*$/.test(raw)) return { ok: false, reason: "question" };
+  let out = raw;
+  if (Array.from(out).length > maxChars) {
+    const chars = Array.from(out);
+    const head = chars.slice(0, maxChars + 1).join("");
+    const cut = Math.max(
+      head.lastIndexOf("\u3002"),
+      head.lastIndexOf("\uFF01"),
+      head.lastIndexOf("\uFF1B"),
+      head.lastIndexOf("\uFF0C")
+    );
+    out = cut >= minChars ? head.slice(0, cut + 1) : chars.slice(0, maxChars).join("");
+    if (Array.from(out).length > maxChars) out = Array.from(out).slice(0, maxChars).join("");
+  }
+  const length = Array.from(out).length;
+  if (length < minChars) return { ok: false, reason: "too-short" };
+  const mine = contentGrams(out);
+  if (mine.size === 0) return { ok: false, reason: "no-content" };
+  let overlaps = false;
+  for (const source of Array.isArray(sources) ? sources : []) {
+    for (const gram of contentGrams(source)) {
+      if (mine.has(gram)) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (overlaps) break;
+  }
+  if (!overlaps) return { ok: false, reason: "no-overlap" };
+  return { ok: true, text: out };
+}
 var SLEEP_LEASE_KEY = "meta.sleepLease";
 var SLEEP_LEASE_MS = 6 * 60 * 60 * 1e3;
 async function runNightlySleep(db, {
@@ -1386,7 +1440,10 @@ async function runNightlySleep(db, {
     scanned: 0,
     skippedEntities: 0,
     skippedGroups: 0,
-    details: []
+    details: [],
+    /** Replies rejected by the acceptance gate (not stored, originals kept). */
+    rejectedGroups: 0,
+    rejections: []
   };
   if (lease && !claimLease(db, SLEEP_LEASE_KEY, SLEEP_LEASE_MS)) {
     logger?.info?.("dsh-xiaofei-memory: nightly sleep already claimed by another process; skipping");
@@ -1449,11 +1506,19 @@ async function runNightlySleep(db, {
         logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
         continue;
       }
+      const verdict = acceptSummary(content, texts);
+      if (!verdict.ok) {
+        stats2.rejectedGroups++;
+        stats2.rejections.push({ entity, roleId, reason: verdict.reason, chars: Array.from(content).length });
+        stats2.skippedGroups++;
+        logger?.warn?.(`dsh-xiaofei-memory: distillation rejected "${entity}" (${ids.length} memories): ${verdict.reason}`);
+        continue;
+      }
       const res = withTransaction(db, () => {
         const written = addMemory(db, {
           roleId,
           layer: "core",
-          content,
+          content: verdict.text,
           entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
           originIds: ids,
           strength: 1,
@@ -1927,6 +1992,16 @@ function recordSleepRun(db, stats) {
     skippedEntities: stats?.skippedEntities ?? 0,
     skippedGroups: stats?.skippedGroups ?? 0,
     distillSkipped: stats?.distillSkipped ?? null,
+    // Replies the acceptance gate refused. Kept visible so a model that starts
+    // answering with refusals is noticed from the log, not from a polluted
+    // catalogue weeks later.
+    rejectedGroups: stats?.rejectedGroups ?? 0,
+    rejections: Array.isArray(stats?.rejections) ? stats.rejections.slice(0, 8).map((r) => ({
+      entity: String(r?.entity ?? ""),
+      roleId: r?.roleId ?? null,
+      reason: String(r?.reason ?? ""),
+      chars: Number(r?.chars) || 0
+    })) : [],
     vacuumed: stats?.vacuumed === true,
     // Only the shape of what was distilled — entity, role, group size. The
     // summary text itself lives in the store as a normal memory.
@@ -2184,7 +2259,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128090128" : "dev";
+var BUILD_STAMP = true ? "20261128091236" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';

@@ -1,6 +1,6 @@
 // test-sleep.mjs — nightly sleep: dynamic threshold, entity noise filter, seed safety.
 import { openMemoryDb, closeMemoryDb, addMemory, listLayerMemories, metaGet, metaSet } from "./src/db.js";
-import { runNightlySleep, distillThreshold, SLEEP_LEASE_KEY } from "./src/sleep.js";
+import { runNightlySleep, distillThreshold, SLEEP_LEASE_KEY, acceptSummary } from "./src/sleep.js";
 import { isMeaningfulEntity } from "./src/util.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -150,7 +150,7 @@ console.log("== 3b. distillation must stay inside one role ==");
   }).id;
 
   const stats = await runNightlySleep(xDb, {
-    summarize: async (texts) => { seenInputs.push(texts.join(" / ")); return "同角色工作要点的合并摘要"; },
+    summarize: async (texts) => { seenInputs.push(texts.join(" / ")); return "角色要点：" + texts[0].slice(0, 40); },
   });
 
   const summary = xDb
@@ -188,7 +188,7 @@ console.log("== 3c. distillation archives only what the summariser saw ==");
   }
   let fed = 0;
   const stats = await runNightlySleep(db8, {
-    summarize: async (texts) => { fed = texts.length; return "二十条合并后的要点摘要"; },
+    summarize: async (texts) => { fed = texts.length; return "合并要点：" + texts[0].slice(0, 40); },
   });
   check("summariser receives at most 8 rows", fed <= 8, `fed=${fed}`);
   check("archived count equals what was summarised", stats.archived === fed, `archived=${stats.archived} fed=${fed}`);
@@ -220,6 +220,55 @@ console.log("== 3d. one pass per night, across channels ==");
   check("a failing pass still releases the lease", metaGet(dbL, SLEEP_LEASE_KEY) === "0", String(metaGet(dbL, SLEEP_LEASE_KEY)));
 
   closeMemoryDb(dbL);
+  try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+
+console.log("== 3e. output acceptance: a reply is not automatically a memory ==");
+{
+  // The first real run stored this refusal as a core memory:
+  //   "由于涉及多个记忆条目且部分内容不完整，无法准确压缩为一句不超过100字的要点。建议补充完整信息后重试。"
+  const refusal = "由于涉及多个记忆条目且部分内容不完整，无法准确压缩为一句不超过100字的要点。建议补充完整信息后重试。";
+  const sources = ["豆包负责审核插件源码并生成报告", "把报告存到 reports 目录下"];
+  check("a refusal is rejected", acceptSummary(refusal, sources).ok === false, acceptSummary(refusal, sources).reason);
+
+  const good = "豆包负责审核插件源码并生成报告存于 reports 目录，只改报告不改代码。";
+  const verdict = acceptSummary(good, sources);
+  check("a real summary passes", verdict.ok === true, JSON.stringify(verdict));
+
+  check("a question is not a summary",
+    acceptSummary("这几条记忆说的是同一件事吗？", sources).ok === false);
+  check("an apology is rejected",
+    acceptSummary("抱歉，我无法完成这个压缩任务。", sources).ok === false);
+  check("a bare acknowledgement is too short",
+    acceptSummary("好的", sources).ok === false);
+  check("no shared content means noise",
+    acceptSummary("今天天气不错适合出去走走散散步吧", sources).ok === false);
+  check("an over-long reply is cut at a sentence boundary",
+    (() => {
+      const long = ("豆包负责审核插件源码。" ).repeat(20);
+      const v = acceptSummary(long, sources);
+      return v.ok === true && Array.from(v.text).length <= 120;
+    })());
+
+  // End to end: a rejected group must keep its originals — nothing written,
+  // nothing archived — so the rows come back next night.
+  const d = mkdtempSync(join(tmpdir(), "dshxf-gate-"));
+  const dbG = openMemoryDb(join(d, "m.sqlite"));
+  const ins = dbG.prepare(
+    "INSERT INTO memories (id, role_id, layer, content, entities, strength, created_at, status) VALUES (?, 'global', 'recent', ?, ?, 1.0, ?, 'active')"
+  );
+  const ie = dbG.prepare("INSERT OR IGNORE INTO entity_index (entity, memory_id, confidence) VALUES (?, ?, 1.0)");
+  for (let i = 0; i < 14; i++) {
+    ins.run(`gate_${i}`, `关于豆包审核流程的第${i}条记录，内容各不相同。`, JSON.stringify(["豆包审核"]), Date.now() - i * 1000);
+    ie.run("豆包审核", `gate_${i}`);
+  }
+  const gStats = await runNightlySleep(dbG, { summarize: async () => refusal });
+  const alive = dbG.prepare("SELECT COUNT(*) n FROM memories WHERE status='active' AND id LIKE 'gate\_%' ESCAPE '\\'").get().n;
+  check("a rejected group archives nothing", gStats.archived === 0, `archived=${gStats.archived}`);
+  check("its originals are all still active", alive === 14, `alive=${alive}/14`);
+  check("the rejection is recorded", gStats.rejectedGroups === 1 && gStats.rejections?.[0]?.reason === "refusal",
+    JSON.stringify(gStats.rejections));
+  closeMemoryDb(dbG);
   try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 

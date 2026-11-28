@@ -53,6 +53,18 @@ export function recordSleepRun(db, stats) {
     skippedEntities: stats?.skippedEntities ?? 0,
     skippedGroups: stats?.skippedGroups ?? 0,
     distillSkipped: stats?.distillSkipped ?? null,
+    // Replies the acceptance gate refused. Kept visible so a model that starts
+    // answering with refusals is noticed from the log, not from a polluted
+    // catalogue weeks later.
+    rejectedGroups: stats?.rejectedGroups ?? 0,
+    rejections: Array.isArray(stats?.rejections)
+      ? stats.rejections.slice(0, 8).map((r) => ({
+          entity: String(r?.entity ?? ""),
+          roleId: r?.roleId ?? null,
+          reason: String(r?.reason ?? ""),
+          chars: Number(r?.chars) || 0,
+        }))
+      : [],
     vacuumed: stats?.vacuumed === true,
     // Only the shape of what was distilled — entity, role, group size. The
     // summary text itself lives in the store as a normal memory.

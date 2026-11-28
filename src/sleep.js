@@ -28,6 +28,85 @@ export function distillThreshold(size) {
  * `summarize` is an optional async (texts[]) => string | null LLM hook;
  * falls back to a deterministic heuristic when absent.
  */
+/** Phrases that mean the model explained why it could not do the job. */
+const REFUSAL_PATTERNS = [
+  /无法(?:准确)?(?:压缩|概括|总结|提炼)/,
+  /(?:建议|请|需要)(?:补充|提供)(?:更)?(?:完整|详细|更多)/,
+  /需要(?:更多|补充).{0,6}(?:信息|上下文|内容)/,
+  /(?:内容|信息)(?:并)?不完整/,
+  /(?:抱歉|对不起)/,
+  /作为(?:一个|一名)?\s*(?:AI|人工智能|语言模型)/i,
+  /(?:i'?m sorry|i am sorry|cannot|can'?t|unable to|as an ai\b)/i,
+];
+
+/** Self-reference to the instruction rather than the material. */
+const META_PATTERNS = [/不超过\s*\d+\s*字/, /压缩成(?:一句|一段)要点/];
+
+/** Character bigrams of the CJK text plus latin words of 3+ characters. */
+function contentGrams(text) {
+  const s = String(text ?? "");
+  const set = new Set();
+  const cjk = s.replace(/[^\u4e00-\u9fa5]/g, "");
+  for (let i = 0; i + 2 <= cjk.length; i++) set.add(cjk.slice(i, i + 2));
+  for (const word of s.toLowerCase().match(/[a-z][a-z0-9_.-]{2,}/g) ?? []) set.add(word);
+  return set;
+}
+
+/**
+ * Decide whether a summariser reply is a memory at all.
+ *
+ * Distillation writes its output into `core` and archives the rows it came
+ * from, so a bad reply is not a wasted call — it becomes a permanent memory and
+ * takes an index line. A flood of such rows pushes real memories out of the
+ * catalogue.
+ *
+ * The first failure this caught was a refusal: "由于涉及多个记忆条目且部分内容
+ * 不完整，无法准确压缩…" was stored as a summary. A refusal is the model talking
+ * about the task, not about the subject, and must never be stored.
+ *
+ * @param {unknown} text the summariser reply
+ * @param {string[]} sources the rows the summary was made from
+ * @returns {{ ok: boolean, text?: string, reason?: string }}
+ */
+export function acceptSummary(text, sources, { minChars = 12, maxChars = 120 } = {}) {
+  const raw = String(text ?? "").trim().replace(/^["'“”「」\s]+|["'“”「」\s]+$/g, "");
+  if (!raw) return { ok: false, reason: "empty" };
+  for (const pattern of REFUSAL_PATTERNS) if (pattern.test(raw)) return { ok: false, reason: "refusal" };
+  for (const pattern of META_PATTERNS) if (pattern.test(raw)) return { ok: false, reason: "meta" };
+  if (/[?？]\s*$/.test(raw)) return { ok: false, reason: "question" };
+
+  let out = raw;
+  if (Array.from(out).length > maxChars) {
+    const chars = Array.from(out);
+    const head = chars.slice(0, maxChars + 1).join("");
+    // Cut at a sentence boundary when there is one in range; never mid-word.
+    const cut = Math.max(
+      head.lastIndexOf("。"), head.lastIndexOf("！"), head.lastIndexOf("；"), head.lastIndexOf("，"),
+    );
+    out = cut >= minChars ? head.slice(0, cut + 1) : chars.slice(0, maxChars).join("");
+    // The sentence boundary can sit at maxChars, which yields maxChars+1 after
+    // including the punctuation; clamp so the limit is a real limit.
+    if (Array.from(out).length > maxChars) out = Array.from(out).slice(0, maxChars).join("");
+  }
+  const length = Array.from(out).length;
+  if (length < minChars) return { ok: false, reason: "too-short" };
+
+  // No shared content means the reply is about something other than the input:
+  // the summary says nothing the rows did not, which makes it noise.
+  const mine = contentGrams(out);
+  if (mine.size === 0) return { ok: false, reason: "no-content" };
+  let overlaps = false;
+  for (const source of Array.isArray(sources) ? sources : []) {
+    for (const gram of contentGrams(source)) {
+      if (mine.has(gram)) { overlaps = true; break; }
+    }
+    if (overlaps) break;
+  }
+  if (!overlaps) return { ok: false, reason: "no-overlap" };
+
+  return { ok: true, text: out };
+}
+
 export const SLEEP_LEASE_KEY = "meta.sleepLease";
 const SLEEP_LEASE_MS = 6 * 60 * 60 * 1000;
 
@@ -39,6 +118,8 @@ export async function runNightlySleep(db, {
   const stats = {
     distilledGroups: 0, distilledMemories: 0, archived: 0, vacuumed: false,
     threshold: 0, scanned: 0, skippedEntities: 0, skippedGroups: 0, details: [],
+    /** Replies rejected by the acceptance gate (not stored, originals kept). */
+    rejectedGroups: 0, rejections: [],
   };
 
   // One pass per night, whichever channel asked for it. A manual run used to
@@ -137,6 +218,18 @@ export async function runNightlySleep(db, {
       logger?.warn?.(`dsh-xiaofei-memory: distillation skipped "${entity}" (${ids.length} memories): summarizer returned no usable text`);
       continue;
     }
+    // Output acceptance. A reply that is a refusal, a meta-comment, a question,
+    // or has no content in common with what it summarised is not a memory. The
+    // group is left untouched — nothing written, nothing archived — so the rows
+    // come back next night instead of being replaced by noise.
+    const verdict = acceptSummary(content, texts);
+    if (!verdict.ok) {
+      stats.rejectedGroups++;
+      stats.rejections.push({ entity, roleId, reason: verdict.reason, chars: Array.from(content).length });
+      stats.skippedGroups++;
+      logger?.warn?.(`dsh-xiaofei-memory: distillation rejected "${entity}" (${ids.length} memories): ${verdict.reason}`);
+      continue;
+    }
     // One group is one unit: summary row + archives commit together, so an
     // exception can no longer leave a summary written while its originals
     // survive (duplicates) or originals archived with no summary (loss).
@@ -144,7 +237,7 @@ export async function runNightlySleep(db, {
       const written = addMemory(db, {
         roleId,
         layer: "core",
-        content,
+        content: verdict.text,
         entities: Array.from(new Set(unique.flatMap((m) => m.entities ?? []))).slice(0, 16),
         originIds: ids,
         strength: 1.0,
