@@ -1039,9 +1039,12 @@ function inlineModels(entry) {
   if (!entry || typeof entry !== "object" || !Array.isArray(entry.models)) return [];
   return entry.models.map((m) => typeof m === "string" ? m : m?.id).filter((m) => typeof m === "string" && m);
 }
-async function resolveModelRoute(llm, model) {
+async function resolveModelRoute(llm, model, forcedProvider) {
   const wanted = String(model ?? "").trim();
-  if (!wanted || !llm) return null;
+  if (!llm) return null;
+  const forced = String(forcedProvider ?? "").trim();
+  if (forced && wanted) return { provider: forced, model: wanted };
+  if (!wanted) return null;
   const ids = [];
   const inline = /* @__PURE__ */ new Map();
   try {
@@ -1070,7 +1073,7 @@ async function resolveModelRoute(llm, model) {
   }
   return ids.length > 0 ? { provider: ids[0], model: wanted } : null;
 }
-function buildLlmCaller(ctx, { onError } = {}) {
+function buildLlmCaller(ctx, { onError, provider: forcedProvider } = {}) {
   const report = (reason) => {
     try {
       onError?.(String(reason).slice(0, 200));
@@ -1107,7 +1110,7 @@ function buildLlmCaller(ctx, { onError } = {}) {
         report("no-stream");
         return null;
       }
-      const route = await resolveModelRoute(llm, model);
+      const route = await resolveModelRoute(llm, model, forcedProvider);
       if (!route) {
         report(`no-route(model=${String(model ?? "")})`);
         return null;
@@ -1121,7 +1124,7 @@ function buildLlmCaller(ctx, { onError } = {}) {
       for await (const chunk of stream) {
         if (chunk?.type === "text-delta") assembled += String(chunk.text ?? "");
         else if (chunk?.type === "finish" && chunk.reason?.kind === "error") {
-          report(`error-finish(${route.provider}/${route.model}): ${chunk.reason?.message ?? ""}`);
+          report(`error-finish(${route.provider}/${route.model}): ${JSON.stringify(chunk.reason).slice(0, 260)}`);
           return null;
         }
       }
@@ -2103,6 +2106,13 @@ var Config = z.object({
   /** Whether to use the LLM-backed extractor (default heuristic keeps it dependency-free). */
   useLlmExtraction: z.boolean().default(false),
   /**
+   * Provider route for the extraction/summariser model. Empty means "discover
+   * the provider that advertises `extractionModel`", which can pick a route
+   * whose key is not configured when several providers advertise the same
+   * model. Set it to pin one.
+   */
+  extractionProvider: z.string().default("").volatile(),
+  /**
    * Gate the nightly summariser separately from capture extraction.
    *
    * Turning on `useLlmExtraction` also sends every captured turn through the
@@ -2174,7 +2184,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128083621" : "dev";
+var BUILD_STAMP = true ? "20261128084335" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2851,7 +2861,7 @@ async function apply(ctx, config) {
 }
 function buildSummarizer(ctx, config, onError) {
   if (!config.enableSleepSummarizer && !config.useLlmExtraction) return null;
-  const callLlm = buildLlmCaller(ctx, { onError });
+  const callLlm = buildLlmCaller(ctx, { onError, provider: config.extractionProvider });
   return buildSleepSummarizer(callLlm, config.extractionModel);
 }
 function buildSleepSummarizer(callLlm, model) {

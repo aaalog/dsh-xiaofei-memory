@@ -50,6 +50,13 @@ export const Config = z.object({
   /** Whether to use the LLM-backed extractor (default heuristic keeps it dependency-free). */
   useLlmExtraction: z.boolean().default(false),
   /**
+   * Provider route for the extraction/summariser model. Empty means "discover
+   * the provider that advertises `extractionModel`", which can pick a route
+   * whose key is not configured when several providers advertise the same
+   * model. Set it to pin one.
+   */
+  extractionProvider: z.string().default("").volatile(),
+  /**
    * Gate the nightly summariser separately from capture extraction.
    *
    * Turning on `useLlmExtraction` also sends every captured turn through the
@@ -903,7 +910,7 @@ export async function apply(ctx, config) {
  */
 function buildSummarizer(ctx, config, onError) {
   if (!config.enableSleepSummarizer && !config.useLlmExtraction) return null;
-  const callLlm = buildLlmCaller(ctx, { onError });
+  const callLlm = buildLlmCaller(ctx, { onError, provider: config.extractionProvider });
   // `buildLlmCaller` returning null already reported why through onError.
   return buildSleepSummarizer(callLlm, config.extractionModel);
 }

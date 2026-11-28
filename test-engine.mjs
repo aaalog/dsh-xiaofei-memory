@@ -620,6 +620,23 @@ console.log("== 7p. the LLM caller speaks the service's actual API ==");
     (await buildLlmCaller({ get: () => errorFinish }, { onError: (r) => finished.push(r) })("x", { model: "m" })) === null);
   check("and reports the finish", /error-finish/.test(finished[0] ?? ""), JSON.stringify(finished));
 
+  // An explicit provider short-circuits discovery: several routes can advertise
+  // the same model while only some have a live key.
+  const forcedSeen = [];
+  const manyProviders = {
+    async listProviders() { return [{ provider: "dead" }, { provider: "live" }]; },
+    stream(options) {
+      forcedSeen.push(options.provider);
+      return (async function* () {
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish", reason: { kind: "stop" } };
+      })();
+    },
+  };
+  const forcedAnswer = await buildLlmCaller({ get: () => manyProviders }, { provider: "live" })("x", { model: "m" });
+  check("an explicit provider wins over discovery", forcedAnswer === "ok" && forcedSeen[0] === "live",
+    `${forcedAnswer} via ${forcedSeen[0]}`);
+
   const unrouted = [];
   const emptyProviders = { async listProviders() { return []; }, stream() {} };
   await buildLlmCaller({ get: () => emptyProviders }, { onError: (r) => unrouted.push(r) })("x", { model: "m" });

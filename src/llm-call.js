@@ -51,9 +51,16 @@ function inlineModels(entry) {
  * @param {unknown} model configured model id
  * @returns {Promise<{provider: string, model: string} | null>}
  */
-export async function resolveModelRoute(llm, model) {
+export async function resolveModelRoute(llm, model, forcedProvider) {
   const wanted = String(model ?? "").trim();
-  if (!wanted || !llm) return null;
+  if (!llm) return null;
+  // An explicit provider short-circuits discovery. Discovery picks the FIRST
+  // route advertising the model, and several providers can advertise the same
+  // one while only some have a live key — which is exactly how a "route found,
+  // call failed" loop looks from the outside.
+  const forced = String(forcedProvider ?? "").trim();
+  if (forced && wanted) return { provider: forced, model: wanted };
+  if (!wanted) return null;
 
   const ids = [];
   const inline = new Map();
@@ -98,7 +105,7 @@ export async function resolveModelRoute(llm, model) {
  * @param {{ onError?: (reason: string) => void }} [options]
  * @returns {null | ((prompt: string, options?: { model?: string }) => Promise<string | null>)}
  */
-export function buildLlmCaller(ctx, { onError } = {}) {
+export function buildLlmCaller(ctx, { onError, provider: forcedProvider } = {}) {
   const report = (reason) => {
     try { onError?.(String(reason).slice(0, 200)); } catch { /* diagnostics never throw */ }
   };
@@ -123,7 +130,7 @@ export function buildLlmCaller(ctx, { onError } = {}) {
       }
       if (typeof llm.stream !== "function") { report("no-stream"); return null; }
 
-      const route = await resolveModelRoute(llm, model);
+      const route = await resolveModelRoute(llm, model, forcedProvider);
       if (!route) { report(`no-route(model=${String(model ?? "")})`); return null; }
 
       let assembled = "";
@@ -135,7 +142,10 @@ export function buildLlmCaller(ctx, { onError } = {}) {
       for await (const chunk of stream) {
         if (chunk?.type === "text-delta") assembled += String(chunk.text ?? "");
         else if (chunk?.type === "finish" && chunk.reason?.kind === "error") {
-          report(`error-finish(${route.provider}/${route.model}): ${chunk.reason?.message ?? ""}`);
+          // Keep the whole finish payload: the readable message has been empty
+          // every time, so the useful part (code, status, provider error body)
+          // lives somewhere else in the structure.
+          report(`error-finish(${route.provider}/${route.model}): ${JSON.stringify(chunk.reason).slice(0, 260)}`);
           return null;
         }
       }
