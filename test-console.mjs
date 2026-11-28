@@ -23,7 +23,8 @@ const stats = getMemoryStats(db);
 ok(typeof stats.total === "number" && stats.total >= 4, "getMemoryStats returns total");
 ok(stats.byLayer.core >= 1 && stats.byLayer.weekly >= 1 && stats.byLayer.recent >= 2, "getMemoryStats groups by layer");
 ok(stats.byRole.companion >= 1 && stats.byRole["work-assistant"] >= 1, "getMemoryStats groups by role");
-ok(stats.evolution && typeof stats.evolution.retrievalWeight === "number", "getMemoryStats includes evolution");
+ok(stats.evolution === undefined, "getMemoryStats no longer reports a dead evolution loop");
+ok(typeof stats.byLayer === "object" && typeof stats.byRole === "object", "getMemoryStats still reports the layers and roles");
 
 // searchMemory
 const results = searchMemory(db, { query: "赛博战友 小肥鱼", roleId: "companion" });

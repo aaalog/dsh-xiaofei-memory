@@ -9,7 +9,7 @@ import { resolveMemoryRef } from "./src/memory-index.js";
 import { isRoleEnabled, roleIdsForAgent } from "./src/roles.js";
 import { claimLease, releaseLease } from "./src/lease.js";
 import { buildLlmCaller, resolveModelRoute, providerIdOf } from "./src/llm-call.js";
-import { loadEvolution, runEvolution } from "./src/evolution.js";
+import { detectCorrection } from "./src/correction.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rmSync, mkdtempSync } from "node:fs";
@@ -187,11 +187,37 @@ purgeArchived(db, { retentionMs: 0 });
 const purged = db.prepare("SELECT count(*) n FROM memories WHERE status='archived'").get();
 check("an expired retention is purged", (purged?.n ?? 0) === 0, `archived=${purged?.n}`);
 
-console.log("== 7. Evolution ==");
-const beforeEv = loadEvolution(db);
-const ev = runEvolution(db, { recallCount: 10, recallCorrections: 6 });
-check("evolution nudges weight down", ev.changed && ev.retrievalWeight < beforeEv.retrievalWeight, `${beforeEv.retrievalWeight} -> ${ev.retrievalWeight}`);
-check("evolution persists to meta", metaGet(db, "evolution.retrievalWeight") !== null);
+console.log("== 7. Correction detection replaces the dead evolution loop ==");
+{
+  // `correctionTools` defaults to empty, so `corrections` could never move and
+  // the "evolution" loop was dead code. The owner's words are the signal now.
+  const hits = [
+    "你记错了，是 Search.php 不是 Product.php",
+    "不是这个，我说的是价格配置那条",
+    "搞混了，那两条是分开的",
+    "纠正一下，供应商维度不是可选的",
+  ];
+  const misses = [
+    "这个方案对不对？",
+    "今天天气不错",
+    "应该是明天下午开会",
+    "把那条记忆读出来给我看",
+  ];
+  for (const text of hits) check(`correction detected: ${text.slice(0, 12)}`, detectCorrection(text).hit === true);
+  for (const text of misses) check(`not a correction: ${text.slice(0, 12)}`, detectCorrection(text).hit === false);
+  check("an empty message is not a correction", detectCorrection("").hit === false);
+  check("the reason is reported", typeof detectCorrection("你记错了").reason === "string");
+
+  // Damping really lowers strength and really restores.
+  const before = addMemory(db, { roleId: "corr-role", layer: "weekly", content: "这是会被纠错阻尼的那条记忆" });
+  const startStrength = Number(db.prepare("SELECT strength FROM memories WHERE id=?").get(before.id).strength);
+  const fb = new FeedbackManager({ db, dampFactor: 0.85 });
+  check("damp reports success for a real row", fb.damp(before.id) === true);
+  const afterStrength = Number(db.prepare("SELECT strength FROM memories WHERE id=?").get(before.id).strength);
+  check("damp lowered the strength", afterStrength < startStrength, `${startStrength} -> ${afterStrength}`);
+  check("damp returns false for an unknown id", fb.damp("mem_nope") === false);
+  fb.dispose();
+}
 
 console.log("== 7b. store hygiene: secrets, length cap, transaction nesting ==");
 {

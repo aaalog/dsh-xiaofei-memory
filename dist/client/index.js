@@ -487,7 +487,7 @@ var styles_default = `/* dsh-xiaofei-memory management console styles */
 
 // src/client/index.tsx
 var NS = "dsh-xiaofei-memory";
-var BUILD_STAMP = true ? "20261128095320" : "dev";
+var BUILD_STAMP = true ? "20261128102012" : "dev";
 function useBuildMismatch() {
   const [host, setHost] = React.useState(null);
   React.useEffect(() => {
@@ -1325,7 +1325,7 @@ function MemoriesTab({ scope, user }) {
         React.createElement("div", { className: "dshxf-mem-body" }, n.excerpt)
       );
     })()
-  ) : React.createElement("div", { className: "dshxf-note" }, "\u60AC\u505C\u67E5\u770B\u5173\u7CFB\uFF0C\u70B9\u51FB\u661F\u70B9\u67E5\u770B\u5185\u5BB9"), stats && /* @__PURE__ */ React.createElement("div", { className: "dshxf-stats" }, /* @__PURE__ */ React.createElement("span", null, "\u603B\u8BB0\u5FC6 ", /* @__PURE__ */ React.createElement("b", null, stats.total)), /* @__PURE__ */ React.createElement("span", null, "core ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.core ?? 0)), /* @__PURE__ */ React.createElement("span", null, "weekly ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.weekly ?? 0)), /* @__PURE__ */ React.createElement("span", null, "recent ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.recent ?? 0)), /* @__PURE__ */ React.createElement("span", null, "\u68C0\u7D22\u6743\u91CD ", /* @__PURE__ */ React.createElement("b", null, typeof stats.evolution?.retrievalWeight === "number" ? stats.evolution.retrievalWeight.toFixed(2) : "\u2014"))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement(
+  ) : React.createElement("div", { className: "dshxf-note" }, "\u60AC\u505C\u67E5\u770B\u5173\u7CFB\uFF0C\u70B9\u51FB\u661F\u70B9\u67E5\u770B\u5185\u5BB9"), stats && /* @__PURE__ */ React.createElement("div", { className: "dshxf-stats" }, /* @__PURE__ */ React.createElement("span", null, "\u603B\u8BB0\u5FC6 ", /* @__PURE__ */ React.createElement("b", null, stats.total)), /* @__PURE__ */ React.createElement("span", null, "core ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.core ?? 0)), /* @__PURE__ */ React.createElement("span", null, "weekly ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.weekly ?? 0)), /* @__PURE__ */ React.createElement("span", null, "recent ", /* @__PURE__ */ React.createElement("b", null, stats.byLayer.recent ?? 0))), /* @__PURE__ */ React.createElement("div", { className: "dshxf-actions" }, /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "dshxf-in dshxf-grow",

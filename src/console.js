@@ -4,7 +4,6 @@
 import { searchMemories, metaGet, metaSet, withTransaction } from "./db.js";
 import { retrieveForPrompt } from "./retrieval.js";
 import { runNightlySleep } from "./sleep.js";
-import { loadEvolution } from "./evolution.js";
 import { selectCoreMemories, renderCoreMemory, CORE_MEMORY_SECTION_NAME, CORE_MEMORY_SECTION_ORDER } from "./core-memory.js";
 import { buildMemoryIndex, renderMemoryIndex } from "./memory-index.js";
 import { tokenEstimate, isMeaningfulEntity, parseJsonList } from "./util.js";
@@ -110,7 +109,6 @@ export function getMemoryStats(db) {
     total: Object.values(byLayer).reduce((a, b) => a + b, 0),
     byLayer,
     byRole,
-    evolution: loadEvolution(db),
   };
 }
 
@@ -139,7 +137,6 @@ export function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }
     enableGraphRecall: true,
     maxTokens,
     limit: 8,
-    weight: loadEvolution(db).retrievalWeight,
   });
 }
 

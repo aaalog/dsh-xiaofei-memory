@@ -931,7 +931,7 @@ function retrieveForPrompt(db, {
   enableGraphRecall = true,
   maxTokens = 1200,
   limit = 8,
-  /** Weight of the relevance term in the score (evolution tunes this). */
+  /** Weight of the relevance term in the score. Fixed; nothing tunes it at runtime. */
   weight = 0.65,
   /** Relevance floor; the introspective probe bypasses it by design. */
   minSim = DEFAULT_MIN_SIM
@@ -1572,37 +1572,20 @@ async function runNightlySleep(db, {
   }
 }
 
-// src/evolution.js
-var KEY_WEIGHT = "evolution.retrievalWeight";
-var KEY_DECAY = "evolution.timeDecay";
-var CORRECTION_RATIO_TRIGGER = 0.3;
-var WEIGHT_STEP = 0.05;
-var WEIGHT_MIN = 0.35;
-var WEIGHT_MAX = 0.65;
-var DECAY_STEP = 2e-3;
-var DECAY_MAX = 0.05;
-function loadEvolution(db) {
-  const weight = Number(metaGet(db, KEY_WEIGHT) ?? WEIGHT_MAX);
-  const decay = Number(metaGet(db, KEY_DECAY) ?? 0.01);
-  return { retrievalWeight: clamp(weight, WEIGHT_MIN, WEIGHT_MAX), timeDecay: clamp(decay, 1e-3, DECAY_MAX) };
-}
-function runEvolution(db, stats = {}) {
-  const { recallCount = 0, recallCorrections = 0 } = stats;
-  const current = loadEvolution(db);
-  let changed = false;
-  if (recallCount > 0) {
-    const ratio = recallCorrections / recallCount;
-    if (ratio >= CORRECTION_RATIO_TRIGGER) {
-      const nextWeight = clamp(current.retrievalWeight - WEIGHT_STEP, WEIGHT_MIN, WEIGHT_MAX);
-      const nextDecay = clamp(current.timeDecay + DECAY_STEP, 1e-3, DECAY_MAX);
-      if (nextWeight !== current.retrievalWeight || nextDecay !== current.timeDecay) {
-        metaSet(db, KEY_WEIGHT, nextWeight);
-        metaSet(db, KEY_DECAY, nextDecay);
-        return { retrievalWeight: nextWeight, timeDecay: nextDecay, changed: true };
-      }
-    }
+// src/correction.js
+var PATTERNS = [
+  { reason: "misremembered", re: /记错|记混|搞错|搞混|弄错/ },
+  { reason: "not-that-one", re: /不是(这个|那条|这条|它|他)|不对[，,、]?\s*是/ },
+  { reason: "what-i-said", re: /我说的是|我说过的是|我的原话/ },
+  { reason: "explicit-correction", re: /纠正一下|更正一下|更正为/ }
+];
+function detectCorrection(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return { hit: false };
+  for (const { reason, re } of PATTERNS) {
+    if (re.test(raw)) return { hit: true, reason };
   }
-  return { ...current, changed };
+  return { hit: false };
 }
 
 // src/core-memory.js
@@ -2056,8 +2039,7 @@ function getMemoryStats(db) {
   return {
     total: Object.values(byLayer).reduce((a, b) => a + b, 0),
     byLayer,
-    byRole,
-    evolution: loadEvolution(db)
+    byRole
   };
 }
 function searchMemory(db, { query, roleId = "global", limit = 12, decay = 0.01 }) {
@@ -2081,8 +2063,7 @@ function previewRecall(db, { query, roleId = "global", maxTokens = 1200 }) {
     roleIds: roleId && roleId !== "all" ? [roleId, "global"] : allRoleIds(db),
     enableGraphRecall: true,
     maxTokens,
-    limit: 8,
-    weight: loadEvolution(db).retrievalWeight
+    limit: 8
   });
 }
 async function triggerNightlySleep(db, { summarize, logger, archiveRetentionMs, lease = true } = {}) {
@@ -2276,7 +2257,7 @@ var Config = z.object({
     { id: "work-assistant", name: "\u5F00\u53D1A", description: "\u4EFB\u52A1\u6D41\u8F6C\u4E0E\u591A\u89D2\u8272\u534F\u4F5C", enabled: true }
   ]).volatile()
 });
-var BUILD_STAMP = true ? "20261128095320" : "dev";
+var BUILD_STAMP = true ? "20261128102012" : "dev";
 var LAST_SLEEP_KEY = "meta.lastSleepAt";
 var RECALL_STATS_KEY = "meta.recallStats";
 var EMPTY_RECALL_STATS = '{"count":0,"corrections":0}';
@@ -2353,19 +2334,32 @@ async function apply(ctx, config) {
       const query = userMsgs[userMsgs.length - 1]?.content?.filter((b) => b?.type === "text")?.map((b) => b?.text ?? "")?.join(" ") ?? "";
       if (!query.trim()) return decision;
       const roleId = agent?.session?.header?.roleId ?? config.roleId;
-      const evolution = loadEvolution(db);
+      const sid = agent?.session?.id ?? "anon";
+      const previous = lastInjected.get(sid) ?? [];
+      const correction = detectCorrection(query);
+      if (correction.hit && previous.length > 0) {
+        let damped = 0;
+        for (const id of previous) {
+          try {
+            if (feedback.damp(id)) damped++;
+          } catch {
+          }
+        }
+        if (damped > 0) {
+          bumpRecallStats(db, { corrections: damped });
+          logger?.info?.(`dsh-xiaofei-memory: correction detected (${correction.reason}); damped ${damped}/${previous.length} recalled memories`);
+        }
+      }
       const recall = retrieveForPrompt(db, {
         query,
         roleIds: [roleId, "global"],
-        decay: evolution.timeDecay,
-        weight: evolution.retrievalWeight,
+        decay: config.timeDecayFactor,
         minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,
         limit: config.recallLimit
       });
       if (!recall) return decision;
-      const sid = agent?.session?.id ?? "anon";
       lastInjected.set(sid, recall.injectedIds);
       if (lastInjected.size > 500) {
         const oldest = lastInjected.keys().next().value;
@@ -2469,14 +2463,9 @@ async function apply(ctx, config) {
       const summarize = buildSummarizer(ctx, config, recordLlmError);
       const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       recordSleepRun(db, stats);
-      const recallStats = readRecallStats(db);
-      const evolved = runEvolution(db, {
-        recallCount: recallStats.count,
-        recallCorrections: recallStats.corrections
-      });
       metaSet(db, LAST_SLEEP_KEY, Date.now());
       metaSet(db, RECALL_STATS_KEY, EMPTY_RECALL_STATS);
-      logger?.info?.(`dsh-xiaofei-memory: nightly sleep done (${JSON.stringify(stats)}), evolution changed=${evolved.changed}`);
+      logger?.info?.(`dsh-xiaofei-memory: nightly sleep done (${JSON.stringify(stats)})`);
     } catch (e) {
       try {
         logger?.warn?.(`dsh-xiaofei-memory: nightly sleep failed: ${e?.message ?? e}`);
@@ -2497,12 +2486,10 @@ async function apply(ctx, config) {
   }, configWriter, logger });
   const core = {
     retrieve(query, opts = {}) {
-      const evolution = loadEvolution(db);
       return retrieveForPrompt(db, {
         query,
         roleIds: opts.roleIds ?? [config.roleId, "global"],
-        decay: evolution.timeDecay,
-        weight: evolution.retrievalWeight,
+        decay: config.timeDecayFactor,
         minSim: opts.minSim ?? config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: opts.maxTokens ?? config.maxRecallTokens,
@@ -2524,7 +2511,7 @@ async function apply(ctx, config) {
       return feedback.damp(id);
     },
     stats() {
-      return { active: countMemories(db), evolution: loadEvolution(db) };
+      return { active: countMemories(db) };
     },
     // --- Management console API ---
     getAllRoles() {
@@ -2541,7 +2528,7 @@ async function apply(ctx, config) {
       return getMemoryStats(db);
     },
     searchMemory(query, roleId) {
-      return searchMemory(db, { query, roleId, decay: loadEvolution(db).timeDecay });
+      return searchMemory(db, { query, roleId, decay: config.timeDecayFactor });
     },
     previewRecall(query, roleId) {
       return previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens });
@@ -2560,7 +2547,7 @@ async function apply(ctx, config) {
     getAllRoles: () => liveRoles.map((r) => ({ ...r })),
     updateRoles: (roles) => core.updateRoles(roles),
     getMemoryStats: () => getMemoryStats(db),
-    searchMemory: (query, roleId) => searchMemory(db, { query, roleId, decay: loadEvolution(db).timeDecay }),
+    searchMemory: (query, roleId) => searchMemory(db, { query, roleId, decay: config.timeDecayFactor }),
     previewRecall: (query, roleId) => previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens }),
     triggerNightlySleep: () => core.triggerNightlySleep(),
     listSoulMemories: () => listSoulMemories(db),
@@ -2624,7 +2611,7 @@ async function apply(ctx, config) {
       case "sleeplog":
         return getSleepLog(db, { limit: Number(args?.limit) || 30 });
       case "search":
-        return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: loadEvolution(db).timeDecay });
+        return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: config.timeDecayFactor });
       case "preview":
         return previewRecall(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", maxTokens: config.maxRecallTokens });
       case "build":
@@ -2775,14 +2762,12 @@ async function apply(ctx, config) {
       render: (_args, v) => [{ type: "text", text: v?.ok ? v.text || "\uFF08\u6CA1\u6709\u547D\u4E2D\u8BB0\u5FC6\uFF09" : "\u68C0\u7D22\u5931\u8D25\u3002" }]
     },
     async execute(args, exec) {
-      const evolution = loadEvolution(db);
       const recall = retrieveForPrompt(db, {
         query: args?.query,
         // The caller's own namespace, not the configured default: an agent
         // working in another role used to read global only.
         roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId),
-        decay: evolution.timeDecay,
-        weight: evolution.retrievalWeight,
+        decay: config.timeDecayFactor,
         minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,

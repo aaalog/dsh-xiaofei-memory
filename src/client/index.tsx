@@ -8,7 +8,7 @@ import cssText from "./styles.css";
 
 type Role = { id: string; name: string; description: string; enabled: boolean };
 type MemRow = { id: string; roleId: string; layer: string; content: string; strength: number; createdAt: string; score: number };
-type Stats = { total: number; byLayer: Record<string, number>; byRole: Record<string, number>; evolution: { retrievalWeight: number; timeDecay: number } };
+type Stats = { total: number; byLayer: Record<string, number>; byRole: Record<string, number> };
 
 const NS = "dsh-xiaofei-memory";
 
@@ -930,7 +930,6 @@ function MemoriesTab({ scope, user }: { scope: any; user: any }) {
           <span>core <b>{stats.byLayer.core ?? 0}</b></span>
           <span>weekly <b>{stats.byLayer.weekly ?? 0}</b></span>
           <span>recent <b>{stats.byLayer.recent ?? 0}</b></span>
-          <span>检索权重 <b>{typeof stats.evolution?.retrievalWeight === "number" ? stats.evolution.retrievalWeight.toFixed(2) : "—"}</b></span>
         </div>
       )}
       <div className="dshxf-actions">

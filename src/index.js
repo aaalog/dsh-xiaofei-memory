@@ -15,7 +15,7 @@ import { buildLlmCaller } from "./llm-call.js";
 import { CaptureTracker, makeLlmExtractor } from "./capture.js";
 import { FeedbackManager } from "./feedback.js";
 import { runNightlySleep } from "./sleep.js";
-import { loadEvolution, runEvolution } from "./evolution.js";
+import { detectCorrection } from "./correction.js";
 import { getMemoryStats, searchMemory, previewRecall, triggerNightlySleep, listSoulMemories, previewCoreMemory, getMemoryGraph, recordSleepRun, getSleepLog } from "./console.js";
 import { registerCoreMemory } from "./core-memory.js";
 import { resolveMemoryRef, shortMemoryId } from "./memory-index.js";
@@ -153,7 +153,7 @@ function readRecallStats(db) {
 
 /**
  * Accumulate recall counters between sleep passes. These are the only inputs
- * `runEvolution` has; without them the evolution loop can never fire (it used
+ * the nightly pass reads; without them the correction ratio means nothing (it used
  * to always read 0, so every night was a no-op).
  */
 function bumpRecallStats(db, delta = {}) {
@@ -249,12 +249,31 @@ export async function apply(ctx, config) {
       if (!query.trim()) return decision;
 
       const roleId = agent?.session?.header?.roleId ?? config.roleId;
-      const evolution = loadEvolution(db);
+      const sid = agent?.session?.id ?? "anon";
+
+      // Correction damping, driven by the owner's own words.
+      //
+      // The damping machinery existed but had no source of signal: `correctionTools`
+      // is empty by default, so `recallStats.corrections` could only ever be zero
+      // and no memory was ever damped. The previous turn's injected ids are the
+      // candidates — a correction is about what was just recalled.
+      const previous = lastInjected.get(sid) ?? [];
+      const correction = detectCorrection(query);
+      if (correction.hit && previous.length > 0) {
+        let damped = 0;
+        for (const id of previous) {
+          try { if (feedback.damp(id)) damped++; } catch { /* ignore */ }
+        }
+        if (damped > 0) {
+          bumpRecallStats(db, { corrections: damped });
+          logger?.info?.(`dsh-xiaofei-memory: correction detected (${correction.reason}); damped ${damped}/${previous.length} recalled memories`);
+        }
+      }
+
       const recall = retrieveForPrompt(db, {
         query,
         roleIds: [roleId, "global"],
-        decay: evolution.timeDecay,
-        weight: evolution.retrievalWeight,
+        decay: config.timeDecayFactor,
         minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,
@@ -262,14 +281,13 @@ export async function apply(ctx, config) {
       });
       if (!recall) return decision;
 
-      const sid = agent?.session?.id ?? "anon";
       lastInjected.set(sid, recall.injectedIds);
       if (lastInjected.size > 500) {
         const oldest = lastInjected.keys().next().value;
         if (oldest !== undefined) lastInjected.delete(oldest);
       }
       for (const id of recall.injectedIds) touchAccessed(db, id);
-      // Feed the evolution loop: how many memories were actually injected.
+      // Telemetry: how many memories were actually injected this turn.
       bumpRecallStats(db, { count: recall.injectedIds.length });
 
       // The host's constructor is preferred, but the package is an optional
@@ -396,14 +414,9 @@ export async function apply(ctx, config) {
       const stats = await runNightlySleep(db, { summarize, logger, lease: true, archiveRetentionMs: retentionMs(config.archiveRetentionDays) });
       // The scheduled pass runs unattended; without this it leaves no trace.
       recordSleepRun(db, stats);
-      const recallStats = readRecallStats(db);
-      const evolved = runEvolution(db, {
-        recallCount: recallStats.count,
-        recallCorrections: recallStats.corrections,
-      });
       metaSet(db, LAST_SLEEP_KEY, Date.now());
       metaSet(db, RECALL_STATS_KEY, EMPTY_RECALL_STATS);
-      logger?.info?.(`dsh-xiaofei-memory: nightly sleep done (${JSON.stringify(stats)}), evolution changed=${evolved.changed}`);
+      logger?.info?.(`dsh-xiaofei-memory: nightly sleep done (${JSON.stringify(stats)})`);
     } catch (e) {
       try { logger?.warn?.(`dsh-xiaofei-memory: nightly sleep failed: ${e?.message ?? e}`); } catch { /* ignore */ }
     }
@@ -425,12 +438,10 @@ export async function apply(ctx, config) {
   // --- Expose memory-core API (PRD 5.2) ---------------------------------
   const core = {
     retrieve(query, opts = {}) {
-      const evolution = loadEvolution(db);
       return retrieveForPrompt(db, {
         query,
         roleIds: opts.roleIds ?? [config.roleId, "global"],
-        decay: evolution.timeDecay,
-        weight: evolution.retrievalWeight,
+        decay: config.timeDecayFactor,
         minSim: opts.minSim ?? config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: opts.maxTokens ?? config.maxRecallTokens,
@@ -458,7 +469,7 @@ export async function apply(ctx, config) {
       return feedback.damp(id);
     },
     stats() {
-      return { active: countMemories(db), evolution: loadEvolution(db) };
+      return { active: countMemories(db) };
     },
     // --- Management console API ---
     getAllRoles() {
@@ -477,7 +488,7 @@ export async function apply(ctx, config) {
       return getMemoryStats(db);
     },
     searchMemory(query, roleId) {
-      return searchMemory(db, { query, roleId, decay: loadEvolution(db).timeDecay });
+      return searchMemory(db, { query, roleId, decay: config.timeDecayFactor });
     },
     previewRecall(query, roleId) {
       return previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens });
@@ -498,7 +509,7 @@ export async function apply(ctx, config) {
     getAllRoles: () => liveRoles.map((r) => ({ ...r })),
     updateRoles: (roles) => core.updateRoles(roles),
     getMemoryStats: () => getMemoryStats(db),
-    searchMemory: (query, roleId) => searchMemory(db, { query, roleId, decay: loadEvolution(db).timeDecay }),
+    searchMemory: (query, roleId) => searchMemory(db, { query, roleId, decay: config.timeDecayFactor }),
     previewRecall: (query, roleId) => previewRecall(db, { query, roleId, maxTokens: config.maxRecallTokens }),
     triggerNightlySleep: () => core.triggerNightlySleep(),
     listSoulMemories: () => listSoulMemories(db),
@@ -550,7 +561,7 @@ export async function apply(ctx, config) {
       case "stats": return getMemoryStats(db);
       case "sleeplog": return getSleepLog(db, { limit: Number(args?.limit) || 30 });
       case "search":
-        return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: loadEvolution(db).timeDecay });
+        return searchMemory(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", decay: config.timeDecayFactor });
       case "preview":
         return previewRecall(db, { query: String(args?.query ?? ""), roleId: args?.roleId ?? "all", maxTokens: config.maxRecallTokens });
       case "build":
@@ -699,14 +710,12 @@ export async function apply(ctx, config) {
       render: (_args, v) => [{ type: "text", text: v?.ok ? (v.text || "（没有命中记忆）") : "检索失败。" }],
     },
     async execute(args, exec) {
-      const evolution = loadEvolution(db);
       const recall = retrieveForPrompt(db, {
         query: args?.query,
         // The caller's own namespace, not the configured default: an agent
         // working in another role used to read global only.
         roleIds: roleIdsForAgent(liveRoles, exec?.agent, config.roleId),
-        decay: evolution.timeDecay,
-        weight: evolution.retrievalWeight,
+        decay: config.timeDecayFactor,
         minSim: config.recallMinSim,
         enableGraphRecall: config.enableGraphRecall,
         maxTokens: config.maxRecallTokens,

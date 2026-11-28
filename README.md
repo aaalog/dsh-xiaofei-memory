@@ -72,6 +72,18 @@
 4. 图谱 1 跳扩散（仅正文命中实体）。
 5. token 预算按 `core > weekly > recent > 扩散` 优先级填充。
 
+### 纠错（correction）
+
+主人自己说的话就是信号：命中 `记错 / 搞混 / 不是这个 / 我说的是 / 纠正一下` 时，
+对**上一轮注入的那几条**记忆做阻尼（`strength × dampFactor`，15 分钟后自动恢复），
+并累加 `recallStats.corrections`。
+
+**误报的代价是可控的**（一条相关记忆短暂降权、自动恢复），漏报的代价是纠错信号永远为 0。
+另有一条工具触发路径（`correctionTools`），默认关闭，作为补充。
+
+> 自动调参（原 `evolution.js`）已删除：单机样本太少，自我微调的结果是自我退化。
+> `dampFactor` / `timeDecayFactor` 现在是纯手动配置。
+
 ### 夜间代谢（sleep）
 
 - **跨进程租约**：`meta.sleepLease`，定时与手动通道都抢，`finally` 释放；一次只跑一遍。
@@ -154,8 +166,6 @@ Git 包）：
 - **2 字中文 FTS 失效**：trigram 需 3 字，2 字查询靠 LIKE 全表扫兜底。
 - **候选上限 4000**：10k 规模、上万条同词命中时会退化为"只评分前 4000 条"，答案可能在窗外；
   273 条实测最慢 22ms，10k 全命中约 145ms。
-- **`runEvolution` 实际未生效**：`correctionTools` 默认空，`recallStats.corrections` 恒 0，
-  自适应调参从未触发（`recallStats.count` 正常递增）。
 - **捕获兜底**：会话没有 `roleId` 时写入 `global`，即共享命名空间。
 - **未发布到 npm / 插件市场**：升级靠改 SHA 重装重启，没有"点击更新"。
 - 超过 400 字的历史行不会被自动重写，裁剪是显式的手工步骤。

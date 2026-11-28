@@ -104,14 +104,14 @@ check("pre-step injects a message", Array.isArray(out?.messages) && out.messages
 check("injected message is <memory-recall>", (out?.messages?.[0]?.content?.[0]?.text ?? "").includes("<memory-recall>"));
 check("injected source tagged", out?.messages?.[0]?.source?.kind === "dsh-xiaofei-memory");
 
-// The evolution loop is fed by these counters; before this fix nothing ever
+// The correction ratio is fed by these counters; before this fix nothing ever
 // incremented them, so every nightly run read 0 and was a no-op.
 const statsRow = provided["memory-core"].db
   .prepare("SELECT value FROM meta WHERE key = 'meta.recallStats'")
   .get();
 let parsedStats = {};
 try { parsedStats = JSON.parse(statsRow?.value ?? "{}"); } catch { /* corrupted */ }
-check("pre-step fed the evolution counters", (Number(parsedStats.count) || 0) > 0, `count=${parsedStats.count}`);
+check("pre-step fed the recall counters", (Number(parsedStats.count) || 0) > 0, `count=${parsedStats.count}`);
 
 // Cleanup.
 for (const c of cleanups) c();

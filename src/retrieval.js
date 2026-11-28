@@ -30,7 +30,7 @@ export function retrieveForPrompt(db, {
   enableGraphRecall = true,
   maxTokens = 1200,
   limit = 8,
-  /** Weight of the relevance term in the score (evolution tunes this). */
+  /** Weight of the relevance term in the score. Fixed; nothing tunes it at runtime. */
   weight = 0.65,
   /** Relevance floor; the introspective probe bypasses it by design. */
   minSim = DEFAULT_MIN_SIM,

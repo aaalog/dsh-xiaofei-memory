@@ -35,11 +35,21 @@ sees on every turn.
 - **Retired memories are kept for seven days** (`archiveRetentionDays`) before
   the nightly pass deletes them. Rows archived by an earlier build are stamped
   during migration, so they get the same window.
+- **The self-tuning loop is gone.** `evolution.js` is deleted: `correctionTools`
+  defaulted to empty, so `recallStats.corrections` was always zero and the loop
+  never executed once. `dampFactor` and `timeDecayFactor` are plain configuration
+  now. `stats()` no longer returns an `evolution` field.
 - **Existing rows longer than 400 characters are not rewritten.** The cap applies
   to new writes only; trimming historical rows is a deliberate manual step.
 
 ### Added
 
+- **Correction damping driven by the owner's words.** "记错了", "不是这个",
+  "我说的是", "纠正一下" damp the memories injected on the previous turn
+  (`strength × dampFactor`, restored after fifteen minutes) and increment
+  `recallStats.corrections`. The damping machinery existed but had no signal
+  source; false positives cost one memory a short, self-healing dip, while a
+  false negative leaves the loop dead.
 - **Always-on core memory** as a `systemPrompt` section (`memory:core`, order
   10150, `interpolate: false`), with a selection order that is total so identical
   store state renders identical text and the prompt prefix stays cacheable.
